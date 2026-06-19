@@ -294,6 +294,7 @@ fun LanClipboardApp(
             onAutoConnectChanged = controller::updateAutoConnectEnabled,
             onAutoCopyChanged = controller::updateAutoCopyEnabled,
             onReceivedNotificationsChanged = controller::updateReceivedNotificationsEnabled,
+            onReturnAfterNotificationSendChanged = controller::updateReturnAfterNotificationSendEnabled,
             onStartMonitor = onStartMonitor,
             onStopMonitor = onStopMonitor,
         )
@@ -1284,6 +1285,7 @@ private fun SettingsDialog(
     onAutoConnectChanged: (Boolean) -> Unit,
     onAutoCopyChanged: (Boolean) -> Unit,
     onReceivedNotificationsChanged: (Boolean) -> Unit,
+    onReturnAfterNotificationSendChanged: (Boolean) -> Unit,
     onStartMonitor: () -> Unit,
     onStopMonitor: () -> Unit,
 ) {
@@ -1327,6 +1329,13 @@ private fun SettingsDialog(
                     description = stringResource(R.string.settings_received_notifications_desc),
                     checked = config.receivedNotificationsEnabled,
                     onCheckedChange = onReceivedNotificationsChanged,
+                )
+
+                SettingSwitchRow(
+                    title = stringResource(R.string.settings_return_after_send_title),
+                    description = stringResource(R.string.settings_return_after_send_desc),
+                    checked = config.returnAfterNotificationSend,
+                    onCheckedChange = onReturnAfterNotificationSendChanged,
                 )
 
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)

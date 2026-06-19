@@ -141,7 +141,12 @@ class LanClipboardServer(
         }
 
         val peer = PeerInfo(message.deviceId, message.deviceName)
-        if (shouldAutoAcceptJoin() || preApprovedDeviceIds.remove(message.deviceId)) {
+        if (shouldAutoAcceptJoin()) {
+            acceptPeer(conn, peer, autoAccepted = true)
+            return
+        }
+
+        if (preApprovedDeviceIds.remove(message.deviceId)) {
             acceptPeer(conn, peer)
             return
         }
@@ -184,7 +189,7 @@ class LanClipboardServer(
         relayClipboard(message.payload, exclude = conn)
     }
 
-    private fun acceptPeer(conn: WebSocket, peer: PeerInfo) {
+    private fun acceptPeer(conn: WebSocket, peer: PeerInfo, autoAccepted: Boolean = false) {
         peers[conn] = peer
         conn.send(
             json.encodeToString<WireMessage>(
@@ -195,9 +200,15 @@ class LanClipboardServer(
                 ),
             ),
         )
-        onStatus("Connected: ${peer.deviceName}")
         onPeersChanged(peers.values.toList())
         broadcastPeerList()
+        onStatus(
+            if (autoAccepted) {
+                "Auto-accepted: ${peer.deviceName}"
+            } else {
+                "Connected: ${peer.deviceName}"
+            },
+        )
     }
 
     private fun broadcastPeerList() {

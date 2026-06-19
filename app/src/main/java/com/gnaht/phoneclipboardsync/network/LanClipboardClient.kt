@@ -17,12 +17,14 @@ class LanClipboardClient(
     private val onRejected: (String) -> Unit,
     private val onPeerList: (List<PeerWire>) -> Unit,
     private val onRemoteClip: (ClipPayload) -> Unit,
+    private val onClosed: (String) -> Unit,
 ) : WebSocketClient(serverUri) {
     private var accepted = false
 
     override fun onOpen(handshakedata: ServerHandshake?) {
         onStatus("Connecting...")
         send(json.encodeToString<WireMessage>(helloMessage))
+        onStatus("Waiting for host approval")
     }
 
     override fun onMessage(message: String?) {
@@ -52,7 +54,9 @@ class LanClipboardClient(
 
     override fun onClose(code: Int, reason: String?, remote: Boolean) {
         accepted = false
-        onStatus(reason ?: "Disconnected")
+        val message = reason?.takeIf { it.isNotBlank() } ?: "Disconnected"
+        onStatus(message)
+        onClosed(message)
     }
 
     override fun onError(ex: Exception?) {

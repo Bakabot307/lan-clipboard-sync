@@ -62,11 +62,13 @@
     <string name="settings_title">Settings</string>
     <string name="settings_device_name">Device name</string>
     <string name="settings_auto_connect_title">Auto-accept requests</string>
-    <string name="settings_auto_connect_desc">Automatically accept connection requests from other devices.</string>
+    <string name="settings_auto_connect_desc">Automatically accept incoming requests and invitations. Turn off to show Accept/Reject first.</string>
     <string name="settings_auto_copy_title">Auto-copy received text</string>
     <string name="settings_auto_copy_desc">Automatically copy received text to this device clipboard.</string>
     <string name="settings_received_notifications_title">Received notifications</string>
     <string name="settings_received_notifications_desc">Show a system notification when clipboard text is received.</string>
+    <string name="settings_return_after_send_title">Return after notification Send</string>
+    <string name="settings_return_after_send_desc">After tapping Send in the monitor notification, return to the previous app after sending.</string>
     <string name="settings_monitor_title">Clipboard monitor</string>
     <string name="settings_monitor_on">Clipboard monitor is on</string>
     <string name="settings_monitor_off">Off</string>

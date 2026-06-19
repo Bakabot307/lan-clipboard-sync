@@ -33,11 +33,13 @@ class ClipboardSyncController(
     private val clipboardManager =
         applicationContext.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
-    private val sessionManager = LanSessionManager(scope)
+    private val sessionManager = LanSessionManager(scope, applicationContext)
     private val _history = MutableStateFlow<List<HistoryEntry>>(emptyList())
     private val _monitorRunning = MutableStateFlow(false)
 
-    private var ignoredClipboardText: String? = null
+    private val remoteClipboardSuppressions = linkedMapOf<String, Long>()
+    private var lastPublishedClipboardText: String? = null
+    private var lastPublishedClipboardAtMs = 0L
 
     val config: StateFlow<SessionConfig> = preferences.config
     val sessionState: StateFlow<SessionState> = sessionManager.sessionState
@@ -77,7 +79,7 @@ class ClipboardSyncController(
                 showReceivedNotification(payload)
 
                 if (config.value.autoCopyEnabled) {
-                    ignoredClipboardText = payload.text
+                    suppressRemoteClipboardEcho(payload.text)
                     clipboardManager.setPrimaryClip(
                         ClipData.newPlainText("LAN clipboard", payload.text),
                     )
@@ -101,6 +103,9 @@ class ClipboardSyncController(
     fun updateAutoConnectEnabled(value: Boolean) = preferences.updateAutoConnectEnabled(value)
 
     fun updateReceivedNotificationsEnabled(value: Boolean) = preferences.updateReceivedNotificationsEnabled(value)
+
+    fun updateReturnAfterNotificationSendEnabled(value: Boolean) =
+        preferences.updateReturnAfterNotificationSendEnabled(value)
 
     fun refreshRoomCode() {
         preferences.updatePairCode(generateRoomCode())
@@ -183,8 +188,12 @@ class ClipboardSyncController(
     fun onClipboardChanged(text: String) {
         if (text.isBlank()) return
 
-        if (ignoredClipboardText == text) {
-            ignoredClipboardText = null
+        val now = System.currentTimeMillis()
+        if (shouldSuppressRemoteClipboardEcho(text, now)) {
+            return
+        }
+
+        if (isDuplicateOutgoingClipboard(text, now)) {
             return
         }
 
@@ -197,6 +206,8 @@ class ClipboardSyncController(
         )
 
         if (!sessionManager.publishLocalClip(payload)) return
+        lastPublishedClipboardText = text
+        lastPublishedClipboardAtMs = now
 
         addHistory(
             HistoryEntry(
@@ -217,6 +228,36 @@ class ClipboardSyncController(
             )
         }
         _history.value = updated
+    }
+
+    private fun suppressRemoteClipboardEcho(text: String) {
+        val now = System.currentTimeMillis()
+        pruneRemoteClipboardSuppressions(now)
+        remoteClipboardSuppressions[text] = now + REMOTE_CLIPBOARD_SUPPRESSION_MS
+    }
+
+    private fun shouldSuppressRemoteClipboardEcho(text: String, now: Long): Boolean {
+        pruneRemoteClipboardSuppressions(now)
+        return remoteClipboardSuppressions[text]?.let { expiresAt -> expiresAt > now } == true
+    }
+
+    private fun pruneRemoteClipboardSuppressions(now: Long) {
+        val iterator = remoteClipboardSuppressions.iterator()
+        while (iterator.hasNext()) {
+            if (iterator.next().value <= now) {
+                iterator.remove()
+            }
+        }
+
+        while (remoteClipboardSuppressions.size > MAX_REMOTE_CLIPBOARD_SUPPRESSIONS) {
+            val firstKey = remoteClipboardSuppressions.keys.firstOrNull() ?: break
+            remoteClipboardSuppressions.remove(firstKey)
+        }
+    }
+
+    private fun isDuplicateOutgoingClipboard(text: String, now: Long): Boolean {
+        return lastPublishedClipboardText == text &&
+            now - lastPublishedClipboardAtMs < DUPLICATE_OUTGOING_CLIPBOARD_MS
     }
 
     private fun createReceivedNotificationChannel() {
@@ -267,6 +308,9 @@ class ClipboardSyncController(
         private const val RECEIVED_CHANNEL_ID = "clipboard_received"
         private const val NOTIFICATION_PREVIEW_LENGTH = 80
         private const val NOTIFICATION_BIG_TEXT_LENGTH = 240
+        private const val REMOTE_CLIPBOARD_SUPPRESSION_MS = 15_000L
+        private const val MAX_REMOTE_CLIPBOARD_SUPPRESSIONS = 20
+        private const val DUPLICATE_OUTGOING_CLIPBOARD_MS = 1_000L
     }
 }
 

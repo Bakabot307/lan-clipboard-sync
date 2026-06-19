@@ -34,6 +34,10 @@ class AppPreferences(context: Context) {
         putBoolean(KEY_RECEIVED_NOTIFICATIONS, value)
     }
 
+    fun updateReturnAfterNotificationSendEnabled(value: Boolean) = edit {
+        putBoolean(KEY_RETURN_AFTER_NOTIFICATION_SEND, value)
+    }
+
     private fun edit(block: SharedPreferences.Editor.() -> Unit) {
         sharedPreferences.edit().apply(block).apply()
         _config.value = loadConfig()
@@ -59,6 +63,7 @@ class AppPreferences(context: Context) {
             autoCopyEnabled = sharedPreferences.getBoolean(KEY_AUTO_COPY, true),
             autoConnectEnabled = sharedPreferences.getBoolean(KEY_AUTO_CONNECT, false),
             receivedNotificationsEnabled = sharedPreferences.getBoolean(KEY_RECEIVED_NOTIFICATIONS, true),
+            returnAfterNotificationSend = sharedPreferences.getBoolean(KEY_RETURN_AFTER_NOTIFICATION_SEND, false),
         )
     }
 
@@ -86,6 +91,7 @@ class AppPreferences(context: Context) {
         private const val KEY_AUTO_COPY = "auto_copy"
         private const val KEY_AUTO_CONNECT = "auto_connect"
         private const val KEY_RECEIVED_NOTIFICATIONS = "received_notifications"
+        private const val KEY_RETURN_AFTER_NOTIFICATION_SEND = "return_after_notification_send"
 
         private const val DEFAULT_PORT = 8787
         private fun generatePairCode(): String = (100000..999999).random().toString()

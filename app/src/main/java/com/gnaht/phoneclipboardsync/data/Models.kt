@@ -17,6 +17,7 @@ data class SessionConfig(
     val autoCopyEnabled: Boolean,
     val autoConnectEnabled: Boolean,
     val receivedNotificationsEnabled: Boolean,
+    val returnAfterNotificationSend: Boolean,
 )
 
 data class PeerInfo(

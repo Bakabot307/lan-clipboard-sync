@@ -1,5 +1,7 @@
 ﻿package com.gnaht.phoneclipboardsync.network
 
+import android.content.Context
+import android.net.wifi.WifiManager
 import com.gnaht.phoneclipboardsync.data.ClipPayload
 import com.gnaht.phoneclipboardsync.data.ConnectionRequest
 import com.gnaht.phoneclipboardsync.data.DiscoveredLanItem
@@ -13,6 +15,7 @@ import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.SocketTimeoutException
 import java.net.URI
+import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -32,7 +35,14 @@ import org.java_websocket.handshake.ServerHandshake
 
 class LanSessionManager(
     private val scope: CoroutineScope,
+    appContext: Context,
 ) {
+    private val applicationContext = appContext.applicationContext
+    private val wifiManager = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+    private val multicastLock = wifiManager.createMulticastLock(MULTICAST_LOCK_TAG).apply {
+        setReferenceCounted(false)
+    }
+
     private val json = Json {
         ignoreUnknownKeys = true
         classDiscriminator = "kind"
@@ -81,6 +91,7 @@ class LanSessionManager(
 
     fun scanLan(config: SessionConfig) {
         updateLocalConfig(config)
+        acquireLanDiscoveryLock()
         discoveryJob?.cancel()
 
         _sessionState.update {
@@ -240,6 +251,7 @@ class LanSessionManager(
 
         advertiserJob?.cancel()
         advertiserJob = null
+        releaseLanDiscoveryLock()
 
         client?.close()
         client = null
@@ -304,7 +316,7 @@ class LanSessionManager(
             getHostDeviceName = { activeConfig?.deviceName ?: localConfig?.deviceName ?: config.deviceName },
             onStatus = { updateStatus(it) },
             onJoinRequest = { request -> addPendingRequest(request) },
-            onInviteReceived = { request -> addPendingRequest(request) },
+            onInviteReceived = { request -> handleIncomingInvitation(request) },
             onPeersChanged = { updatePeers(it) },
             onRemoteClip = { payload -> scope.launch { _incomingClips.emit(payload) } },
         ).also { it.start() }
@@ -351,7 +363,8 @@ class LanSessionManager(
             )
         }
 
-        client = LanClipboardClient(
+        lateinit var newClient: LanClipboardClient
+        newClient = LanClipboardClient(
             serverUri = URI("ws://${config.hostIp}:${config.port}"),
             helloMessage = HelloMessage(
                 deviceId = config.deviceId,
@@ -380,27 +393,33 @@ class LanSessionManager(
                 val allPeers = peers.toPeerInfos()
                 val remotePeers = allPeers.filterNot { it.deviceId == config.deviceId }
                 visibleGroupMembers = allPeers
-                _sessionState.update {
-                    it.copy(
-                        connectedPeers = remotePeers,
-                        statusMessage = if (remotePeers.isEmpty()) {
-                            "Connected"
-                        } else {
-                            "Sharing clipboard with ${remotePeers.joinNames()}"
-                        },
-                    )
+                if (remotePeers.isEmpty()) {
+                    handleClientClosed(newClient, "Disconnected")
+                } else {
+                    _sessionState.update {
+                        it.copy(
+                            isRunning = true,
+                            connectedPeers = remotePeers,
+                            statusMessage = "Sharing clipboard with ${remotePeers.joinNames()}",
+                        )
+                    }
                 }
             },
             onRemoteClip = { payload -> scope.launch { _incomingClips.emit(payload) } },
+            onClosed = { reason -> handleClientClosed(newClient, reason) },
         ).also {
+            client = it
             scope.launch(Dispatchers.IO) {
-                runCatching { it.connectBlocking() }
+                runCatching { it.connectBlocking(CONNECTION_TIMEOUT_SECONDS, TimeUnit.SECONDS) }
+                    .onSuccess { connected ->
+                        if (!connected && client === it) {
+                            it.close()
+                            handleClientClosed(it, "Connection timed out")
+                        }
+                    }
                     .onFailure { throwable ->
-                        _sessionState.update { state ->
-                            state.copy(
-                                isRunning = false,
-                                statusMessage = throwable.message ?: "Connection failed",
-                            )
+                        if (client === it) {
+                            handleClientClosed(it, throwable.message ?: "Connection failed")
                         }
                     }
             }
@@ -410,6 +429,7 @@ class LanSessionManager(
     private fun startAdvertiser() {
         if (advertiserJob?.isActive == true) return
 
+        acquireLanDiscoveryLock()
         advertiserJob = scope.launch(Dispatchers.IO) {
             runCatching {
                 DatagramSocket().use { socket ->
@@ -508,6 +528,50 @@ class LanSessionManager(
         }
     }
 
+    private fun handleIncomingInvitation(request: ConnectionRequest) {
+        if (localConfig?.autoConnectEnabled == true) {
+            updateStatus("Auto-accepting invitation from ${request.deviceName}")
+            acceptRequest(request)
+        } else {
+            addPendingRequest(request)
+        }
+    }
+
+    private fun handleClientClosed(socket: LanClipboardClient, reason: String) {
+        if (client !== socket) return
+
+        client = null
+        activeConfig = null
+        activeGroupDeviceId = null
+        visibleGroupMembers = emptyList()
+
+        _sessionState.update {
+            it.copy(
+                isRunning = false,
+                role = SessionRole.HOST,
+                connectedPeers = emptyList(),
+                pendingRequests = emptyList(),
+                statusMessage = reason.ifBlank { "Disconnected" },
+            )
+        }
+    }
+
+    private fun acquireLanDiscoveryLock() {
+        runCatching {
+            if (!multicastLock.isHeld) {
+                multicastLock.acquire()
+            }
+        }
+    }
+
+    private fun releaseLanDiscoveryLock() {
+        runCatching {
+            if (multicastLock.isHeld) {
+                multicastLock.release()
+            }
+        }
+    }
+
     private fun updateStatus(message: String) {
         _sessionState.update { it.copy(statusMessage = message, localAddress = _localIpAddress.value) }
     }
@@ -572,6 +636,8 @@ class LanSessionManager(
         private const val DISCOVERY_SOCKET_TIMEOUT_MS = 1000L
         private const val DISCOVERY_PACKET_BYTES = 2048
         private const val INVITE_FLUSH_DELAY_MS = 250L
+        private const val CONNECTION_TIMEOUT_SECONDS = 6L
+        private const val MULTICAST_LOCK_TAG = "LanClipboardSync"
     }
 }
 

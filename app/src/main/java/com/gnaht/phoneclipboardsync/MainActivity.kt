@@ -16,6 +16,7 @@ import com.gnaht.phoneclipboardsync.ui.theme.LanClipboardTheme
 
 class MainActivity : ComponentActivity() {
     private var sendClipboardWhenResumed = false
+    private var returnAfterNotificationSend = false
 
     private val controller by lazy { (application as LanClipboardApplication).controller }
     private val clipboardManager by lazy {
@@ -95,6 +96,7 @@ class MainActivity : ComponentActivity() {
     private fun handleIntent(intent: Intent?) {
         if (intent?.action == ACTION_SEND_CURRENT_CLIPBOARD) {
             sendClipboardWhenResumed = true
+            returnAfterNotificationSend = controller.config.value.returnAfterNotificationSend
             intent.action = null
         }
     }
@@ -111,6 +113,10 @@ class MainActivity : ComponentActivity() {
             .orEmpty()
 
         controller.onClipboardChanged(currentText)
+        if (returnAfterNotificationSend) {
+            returnAfterNotificationSend = false
+            window.decorView.post { finish() }
+        }
     }
 
     companion object {
