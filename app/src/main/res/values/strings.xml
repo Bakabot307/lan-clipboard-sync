@@ -1,0 +1,83 @@
+<resources>
+    <string name="app_name">LAN Clipboard Sync</string>
+
+    <!-- Notification -->
+    <string name="monitor_channel_name">Clipboard monitor</string>
+    <string name="monitor_notification_title">Monitoring clipboard</string>
+    <string name="monitor_notification_body">Copied text can be sent to connected devices.</string>
+    <string name="monitor_notification_send">Send</string>
+    <string name="monitor_notification_end">Stop</string>
+    <string name="received_channel_name">Received clipboard</string>
+    <string name="received_notification_title">Clipboard received</string>
+
+    <!-- Top bar -->
+    <string name="top_bar_title">Clipboard Sync</string>
+
+    <!-- Connection status -->
+    <string name="status_host_running">Sharing clipboard</string>
+    <string name="status_client_connected">Sharing clipboard</string>
+    <string name="status_initializing">Ready to connect</string>
+    <string name="status_idle">Waiting for connection</string>
+    <string name="peers_count">%d devices</string>
+
+    <!-- Monitor -->
+    <string name="monitor_label">Clipboard monitor</string>
+    <string name="monitor_on">Monitoring</string>
+    <string name="monitor_off">Off</string>
+    <string name="monitor_on_description">Copied text can be sent to connected devices.</string>
+    <string name="monitor_off_description">Turn on clipboard sending while this app is focused.</string>
+
+    <!-- Device search -->
+    <string name="room_search_title">Find devices</string>
+    <string name="room_search_hint">Choose a nearby device or group to start sharing.</string>
+    <string name="room_search_btn_scan">Scan network</string>
+    <string name="room_search_btn_scanning">Scanning...</string>
+    <string name="room_search_empty">No devices found.\nTap "Scan network" while the other devices are open on the same Wi-Fi.</string>
+    <string name="room_search_scanning_text">Scanning LAN...</string>
+    <string name="room_found_count">Found %d items</string>
+    <string name="room_join_btn">Connect</string>
+    <string name="room_leave_btn">Disconnect</string>
+    <string name="room_leave_subtitle">Stop sharing with the current devices.</string>
+
+    <!-- Pending requests -->
+    <string name="pending_title">Connection requests</string>
+    <string name="pending_subtitle">wants to connect</string>
+    <string name="pending_accept">Accept</string>
+    <string name="pending_reject">Reject</string>
+    <string name="pending_invitation">invited you to connect</string>
+
+    <!-- Connected peers -->
+    <string name="peers_title">Connected devices</string>
+    <string name="peers_online">Connected</string>
+
+    <!-- History -->
+    <string name="history_title">Clipboard history</string>
+    <string name="history_empty">Connect another device, then copy text to share it.</string>
+    <string name="history_sent">Sent</string>
+    <string name="history_received">Received</string>
+    <string name="history_copy_btn">Copy</string>
+    <string name="history_copied_snackbar">Copied to clipboard.</string>
+
+    <!-- Settings -->
+    <string name="settings_title">Settings</string>
+    <string name="settings_device_name">Device name</string>
+    <string name="settings_auto_connect_title">Auto-accept requests</string>
+    <string name="settings_auto_connect_desc">Automatically accept connection requests from other devices.</string>
+    <string name="settings_auto_copy_title">Auto-copy received text</string>
+    <string name="settings_auto_copy_desc">Automatically copy received text to this device clipboard.</string>
+    <string name="settings_received_notifications_title">Received notifications</string>
+    <string name="settings_received_notifications_desc">Show a system notification when clipboard text is received.</string>
+    <string name="settings_monitor_title">Clipboard monitor</string>
+    <string name="settings_monitor_on">Clipboard monitor is on</string>
+    <string name="settings_monitor_off">Off</string>
+    <string name="settings_monitor_start">Start</string>
+    <string name="settings_monitor_stop">Stop</string>
+    <string name="settings_done">Done</string>
+
+    <!-- Connected state -->
+    <string name="status_sharing_clipboard">Ready to share clipboard</string>
+    <string name="status_connected_peers">Connected to %d devices</string>
+    <string name="status_host_waiting">Waiting for another device...</string>
+    <string name="room_close_btn">Disconnect</string>
+    <string name="room_close_subtitle">Disconnect all devices.</string>
+</resources>
