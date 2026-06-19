@@ -17,3 +17,4 @@ captures/
 build/
 app/build/
 app/debug/
+app/release/
