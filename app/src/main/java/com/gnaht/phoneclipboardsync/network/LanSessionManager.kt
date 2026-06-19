@@ -234,6 +234,37 @@ class LanSessionManager(
         }
     }
 
+    fun shutdown() {
+        discoveryJob?.cancel()
+        discoveryJob = null
+
+        advertiserJob?.cancel()
+        advertiserJob = null
+
+        client?.close()
+        client = null
+
+        server?.clearRoom()
+        server?.shutdown()
+        server = null
+
+        activeConfig = null
+        activeGroupDeviceId = null
+        visibleGroupMembers = emptyList()
+
+        _sessionState.update {
+            it.copy(
+                isRunning = false,
+                isDiscovering = false,
+                role = SessionRole.HOST,
+                statusMessage = "Ready to connect",
+                connectedPeers = emptyList(),
+                discoveredItems = emptyList(),
+                pendingRequests = emptyList(),
+            )
+        }
+    }
+
     fun publishLocalClip(payload: ClipPayload): Boolean {
         val delivered = when (activeConfig?.role) {
             SessionRole.HOST -> {

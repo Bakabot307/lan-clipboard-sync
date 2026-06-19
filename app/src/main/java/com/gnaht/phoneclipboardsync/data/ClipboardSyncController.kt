@@ -166,6 +166,16 @@ class ClipboardSyncController(
         sessionManager.updateLocalConfig(config.value.copy(role = SessionRole.HOST))
     }
 
+    fun prepareForUse() {
+        sessionManager.updateLocalConfig(config.value.copy(role = SessionRole.HOST))
+    }
+
+    fun shutdownForTaskRemoval() {
+        sessionManager.shutdown()
+        preferences.updateRole(SessionRole.HOST)
+        _monitorRunning.value = false
+    }
+
     fun setMonitorRunning(value: Boolean) {
         _monitorRunning.value = value
     }
