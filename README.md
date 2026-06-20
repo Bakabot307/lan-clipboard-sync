@@ -33,7 +33,8 @@ Android 10+ restricts background clipboard reads for normal apps. Because of tha
 
 - Automatic sending works only while this app is focused.
 - The foreground service notification does not bypass Android clipboard restrictions.
-- The **Send** notification action opens/focuses the app, then sends the current clipboard.
+- Tapping the monitor notification opens/focuses the app, then sends the current clipboard.
+- The monitor notification includes **Open app** and **Exit app** actions.
 - Receiving clipboard text over LAN can still work while the app is running.
 - Auto-copying received text to this device clipboard is controlled by the app setting.
 

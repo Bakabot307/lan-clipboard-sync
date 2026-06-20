@@ -3,10 +3,10 @@
 
     <!-- Notification -->
     <string name="monitor_channel_name">Clipboard monitor</string>
-    <string name="monitor_notification_title">Monitoring clipboard</string>
-    <string name="monitor_notification_body">Copied text can be sent to connected devices.</string>
-    <string name="monitor_notification_send">Send</string>
-    <string name="monitor_notification_end">Stop</string>
+    <string name="monitor_notification_title">Tap here to send clipboard</string>
+    <string name="monitor_notification_body">Send the current copied text to connected devices.</string>
+    <string name="monitor_notification_open_app">Open app</string>
+    <string name="monitor_notification_exit_app">Exit app</string>
     <string name="received_channel_name">Received clipboard</string>
     <string name="received_notification_title">Clipboard received</string>
 

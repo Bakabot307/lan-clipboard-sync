@@ -52,7 +52,8 @@ class ClipboardMonitorService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (intent?.action == ACTION_STOP_MONITOR) {
+        if (intent?.action == ACTION_EXIT_APP) {
+            controller.shutdownForTaskRemoval()
             stopSelf()
             return START_NOT_STICKY
         }
@@ -70,16 +71,17 @@ class ClipboardMonitorService : Service() {
             .setSmallIcon(R.drawable.ic_stat_clipboard)
             .setContentTitle(getString(R.string.monitor_notification_title))
             .setContentText(getString(R.string.monitor_notification_body))
+            .setContentIntent(buildSendPendingIntent())
             .setOngoing(true)
             .addAction(
                 R.drawable.ic_stat_clipboard,
-                getString(R.string.monitor_notification_end),
-                buildStopPendingIntent(),
+                getString(R.string.monitor_notification_exit_app),
+                buildExitPendingIntent(),
             )
             .addAction(
                 R.drawable.ic_stat_clipboard,
-                getString(R.string.monitor_notification_send),
-                buildSendPendingIntent(),
+                getString(R.string.monitor_notification_open_app),
+                buildOpenAppPendingIntent(),
             )
             .build()
     }
@@ -97,13 +99,25 @@ class ClipboardMonitorService : Service() {
         )
     }
 
-    private fun buildStopPendingIntent(): PendingIntent {
+    private fun buildOpenAppPendingIntent(): PendingIntent {
+        val intent = Intent(this, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
+        }
+        return PendingIntent.getActivity(
+            this,
+            OPEN_APP_REQUEST_CODE,
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+    }
+
+    private fun buildExitPendingIntent(): PendingIntent {
         val intent = Intent(this, ClipboardMonitorService::class.java).apply {
-            action = ACTION_STOP_MONITOR
+            action = ACTION_EXIT_APP
         }
         return PendingIntent.getService(
             this,
-            STOP_REQUEST_CODE,
+            EXIT_REQUEST_CODE,
             intent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
@@ -129,7 +143,8 @@ class ClipboardMonitorService : Service() {
         private const val CHANNEL_ID = "clipboard_monitor"
         private const val NOTIFICATION_ID = 1001
         private const val SEND_REQUEST_CODE = 2000
-        private const val STOP_REQUEST_CODE = 2001
-        private const val ACTION_STOP_MONITOR = "com.gnaht.phoneclipboardsync.STOP_MONITOR"
+        private const val OPEN_APP_REQUEST_CODE = 2001
+        private const val EXIT_REQUEST_CODE = 2002
+        private const val ACTION_EXIT_APP = "com.gnaht.phoneclipboardsync.EXIT_APP"
     }
 }
