@@ -1,4 +1,4 @@
-﻿package com.gnaht.phoneclipboardsync.data
+package com.gnaht.phoneclipboardsync.data
 
 import android.Manifest
 import android.app.NotificationChannel
@@ -208,6 +208,36 @@ class ClipboardSyncController(
         if (!sessionManager.publishLocalClip(payload)) return
         lastPublishedClipboardText = text
         lastPublishedClipboardAtMs = now
+
+        addHistory(
+            HistoryEntry(
+                clipId = payload.clipId,
+                sourceDeviceName = payload.sourceDeviceName,
+                text = payload.text,
+                timestamp = payload.timestamp,
+                direction = HistoryDirection.SENT,
+            ),
+        )
+    }
+
+    fun suppressClipboardSync(text: String) {
+        suppressRemoteClipboardEcho(text)
+    }
+
+    fun sendTextDirectly(text: String) {
+        if (text.isBlank()) return
+
+        val payload = ClipPayload(
+            clipId = UUID.randomUUID().toString(),
+            sourceDeviceId = config.value.deviceId,
+            sourceDeviceName = config.value.deviceName,
+            text = text,
+            timestamp = System.currentTimeMillis(),
+        )
+
+        if (!sessionManager.publishLocalClip(payload)) return
+        lastPublishedClipboardText = text
+        lastPublishedClipboardAtMs = System.currentTimeMillis()
 
         addHistory(
             HistoryEntry(

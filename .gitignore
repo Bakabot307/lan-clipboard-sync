@@ -18,3 +18,10 @@ build/
 app/build/
 app/debug/
 app/release/
+
+__pycache__/
+*.pyc
+windows_app/config.json
+windows_app/dist/
+windows_app/build/
+windows_app/*.spec

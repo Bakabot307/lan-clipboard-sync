@@ -1,4 +1,4 @@
-﻿package com.gnaht.phoneclipboardsync.ui
+package com.gnaht.phoneclipboardsync.ui
 
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
@@ -270,6 +270,7 @@ fun LanClipboardApp(
             HistoryCard(
                 history = history,
                 onCopyAgain = { text ->
+                    controller.suppressClipboardSync(text)
                     clipboardManager.setText(AnnotatedString(text))
                     scope.launch {
                         snackbarHostState.currentSnackbarData?.dismiss()
@@ -279,6 +280,16 @@ fun LanClipboardApp(
                         )
                     }
                 },
+                onSendAgain = { text ->
+                    controller.sendTextDirectly(text)
+                    scope.launch {
+                        snackbarHostState.currentSnackbarData?.dismiss()
+                        snackbarHostState.showSnackbar(
+                            message = sentMessage,
+                            duration = SnackbarDuration.Short,
+                        )
+                    }
+                }
             )
 
             Spacer(modifier = Modifier.height(24.dp))
@@ -1105,6 +1116,7 @@ private fun LeaveRoomCard(
 private fun HistoryCard(
     history: List<HistoryEntry>,
     onCopyAgain: (String) -> Unit,
+    onSendAgain: (String) -> Unit,
 ) {
     ElevatedCard(shape = RoundedCornerShape(16.dp)) {
         Column(
@@ -1141,7 +1153,7 @@ private fun HistoryCard(
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     items(history, key = { it.clipId }) { item ->
-                        HistoryRow(item = item, onCopyAgain = onCopyAgain)
+                        HistoryRow(item = item, onCopyAgain = onCopyAgain, onSendAgain = onSendAgain)
                     }
                 }
             }
@@ -1153,6 +1165,7 @@ private fun HistoryCard(
 private fun HistoryRow(
     item: HistoryEntry,
     onCopyAgain: (String) -> Unit,
+    onSendAgain: (String) -> Unit,
 ) {
     val isSent = item.direction == HistoryDirection.SENT
     val directionColor = if (isSent) {
@@ -1223,7 +1236,7 @@ private fun HistoryRow(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.End,
             ) {
-                FilledTonalButton(
+                OutlinedButton(
                     onClick = { onCopyAgain(item.text) },
                     shape = RoundedCornerShape(10.dp),
                     contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
@@ -1236,6 +1249,25 @@ private fun HistoryRow(
                     Spacer(modifier = Modifier.width(6.dp))
                     Text(
                         stringResource(R.string.history_copy_btn),
+                        style = MaterialTheme.typography.labelMedium,
+                    )
+                }
+
+                Spacer(modifier = Modifier.width(8.dp))
+
+                FilledTonalButton(
+                    onClick = { onSendAgain(item.text) },
+                    shape = RoundedCornerShape(10.dp),
+                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
+                ) {
+                    Icon(
+                        Icons.Default.Sync,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp),
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        "Send",
                         style = MaterialTheme.typography.labelMedium,
                     )
                 }

@@ -1,4 +1,4 @@
-﻿package com.gnaht.phoneclipboardsync.network
+package com.gnaht.phoneclipboardsync.network
 
 import com.gnaht.phoneclipboardsync.data.ClipPayload
 import java.net.URI
@@ -13,7 +13,7 @@ class LanClipboardClient(
     private val helloMessage: HelloMessage,
     private val json: Json,
     private val onStatus: (String) -> Unit,
-    private val onAccepted: (String, List<PeerWire>) -> Unit,
+    private val onAccepted: (String, String, List<PeerWire>) -> Unit,
     private val onRejected: (String) -> Unit,
     private val onPeerList: (List<PeerWire>) -> Unit,
     private val onRemoteClip: (ClipPayload) -> Unit,
@@ -36,7 +36,7 @@ class LanClipboardClient(
                     accepted = true
                     val hostName = decoded.hostDeviceName.ifBlank { "host" }
                     onStatus("Connected to $hostName")
-                    onAccepted(hostName, decoded.peers)
+                    onAccepted(hostName, decoded.hostDeviceId, decoded.peers)
                 } else {
                     accepted = false
                     val reason = decoded.reason.ifBlank { "Connection rejected" }

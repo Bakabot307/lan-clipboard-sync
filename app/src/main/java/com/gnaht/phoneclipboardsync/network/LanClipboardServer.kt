@@ -18,6 +18,7 @@ class LanClipboardServer(
     private val isRoomOpen: () -> Boolean,
     private val shouldAutoAcceptJoin: () -> Boolean,
     private val getHostDeviceName: () -> String,
+    private val getHostDeviceId: () -> String,
     private val onStatus: (String) -> Unit,
     private val onJoinRequest: (ConnectionRequest) -> Unit,
     private val onInviteReceived: (ConnectionRequest) -> Unit,
@@ -196,6 +197,7 @@ class LanClipboardServer(
                 JoinResponseMessage(
                     accepted = true,
                     hostDeviceName = getHostDeviceName(),
+                    hostDeviceId = getHostDeviceId(),
                     peers = participantWires(),
                 ),
             ),

@@ -1,4 +1,4 @@
-﻿package com.gnaht.phoneclipboardsync.network
+package com.gnaht.phoneclipboardsync.network
 
 import android.content.Context
 import android.net.wifi.WifiManager
@@ -198,6 +198,7 @@ class LanSessionManager(
 
         if (request.isInvitation) {
             val config = localConfig ?: return
+            activeGroupDeviceId = request.deviceId
             startClient(
                 config.copy(
                     role = SessionRole.CLIENT,
@@ -314,6 +315,7 @@ class LanSessionManager(
             isRoomOpen = { activeConfig?.role != SessionRole.CLIENT },
             shouldAutoAcceptJoin = { localConfig?.autoConnectEnabled == true },
             getHostDeviceName = { activeConfig?.deviceName ?: localConfig?.deviceName ?: config.deviceName },
+            getHostDeviceId = { activeConfig?.deviceId ?: localConfig?.deviceId ?: config.deviceId },
             onStatus = { updateStatus(it) },
             onJoinRequest = { request -> addPendingRequest(request) },
             onInviteReceived = { request -> handleIncomingInvitation(request) },
@@ -373,7 +375,10 @@ class LanSessionManager(
             ),
             json = json,
             onStatus = { updateStatus(it) },
-            onAccepted = { hostName, peers ->
+            onAccepted = { hostName, hostDeviceId, peers ->
+                if (hostDeviceId.isNotBlank()) {
+                    activeGroupDeviceId = hostDeviceId
+                }
                 val allPeers = peers.toPeerInfos()
                 val remotePeers = allPeers.filterNot { it.deviceId == config.deviceId }
                 visibleGroupMembers = allPeers
@@ -448,8 +453,9 @@ class LanSessionManager(
                             } else {
                                 config.deviceId
                             }
-                            val displayName = if (groupMembers.size > 1) {
-                                "Group ${groupMembers.joinToString(", ") { it.deviceName }}"
+                            val sortedMemberNames = groupMembers.map { it.deviceName }.sorted()
+                            val displayName = if (sortedMemberNames.size > 1) {
+                                "Group ${sortedMemberNames.joinToString(", ")}"
                             } else {
                                 config.deviceName
                             }
@@ -460,7 +466,7 @@ class LanSessionManager(
                                 hostIp = advertisedHostIp,
                                 port = advertisedPort,
                                 hasOpenRoom = true,
-                                memberNames = groupMembers.map { it.deviceName },
+                                memberNames = sortedMemberNames,
                             )
                             val data = json.encodeToString(message).toByteArray(Charsets.UTF_8)
                             val packet = DatagramPacket(

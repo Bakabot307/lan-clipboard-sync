@@ -27,6 +27,7 @@ data class JoinResponseMessage(
     val accepted: Boolean,
     val reason: String = "",
     val hostDeviceName: String = "",
+    val hostDeviceId: String = "",
     val peers: List<PeerWire> = emptyList(),
 ) : WireMessage
 

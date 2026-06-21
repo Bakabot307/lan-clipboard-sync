@@ -15,7 +15,7 @@ The app discovers nearby devices over LAN, connects them into a sharing group, a
 - In-app button to send the current clipboard after connecting.
 - Optional auto-copy of received text to the local clipboard.
 - Optional system notification when clipboard text is received.
-- Clipboard history limited to the latest 10 entries.
+- Clipboard history limited to the latest 10 entries, featuring separate **Copy** (local copy only, suppressed from sync) and **Send** (direct broadcast to other devices) buttons.
 
 ## How It Works
 
@@ -64,6 +64,56 @@ The debug APK is generated under:
 ```text
 app/build/outputs/apk/debug/
 ```
+
+## Windows Companion App
+
+A lightweight Windows companion app is available under:
+
+```text
+windows_app/
+```
+
+It uses only Python's standard library (`tkinter`, `socket`, `json`) and does not require Electron, .NET, or extra Python packages.
+
+You can run it directly with Python:
+
+```powershell
+.\windows_app\run_windows_app.bat
+```
+
+Or run the compiled standalone executable:
+
+```text
+windows_app/dist/lan_clipboard_windows.exe
+```
+
+To compile the script into a standalone executable yourself, install PyInstaller (`pip install pyinstaller`) and run:
+
+```powershell
+pyinstaller --noconsole --onefile windows_app/lan_clipboard_windows.py
+```
+
+If Android can see the PC but the PC does not show requests, run this once as administrator:
+
+```powershell
+.\windows_app\allow_windows_firewall.bat
+```
+
+If LAN discovery still does not show the Android device, enter the Android device IP in **Android IP**, enter the Android room code in **Room code**, then click **Connect IP**.
+
+The Windows app supports:
+
+- LAN discovery compatible with the Android app.
+- Joining or hosting a clipboard sharing room.
+- Accepting or rejecting the latest incoming request directly from the Requests controls.
+- Sending the current Windows clipboard.
+- Copying a history item by clicking it, without re-sending it.
+- Sending the selected history item with **Send Selected**.
+- Optional clipboard monitoring and auto-copy for received text.
+- Optional auto-accept from the Requests controls.
+- Disconnect notification for connected Android clients when the PC closes a hosted room.
+
+If Windows Firewall asks for network access, allow access on the LAN/Wi-Fi network.
 
 ## Project Details
 
