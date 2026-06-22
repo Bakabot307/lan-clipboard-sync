@@ -1,5 +1,6 @@
 import base64
 import hashlib
+import ipaddress
 import json
 import os
 import queue
@@ -14,7 +15,6 @@ import ctypes
 from ctypes import wintypes
 import mimetypes
 import shutil
-import subprocess
 import tempfile
 import winsound
 from dataclasses import dataclass, field
@@ -27,6 +27,16 @@ CF_DIB = 8
 CF_DIBV5 = 17
 BI_BITFIELDS = 3
 BI_ALPHABITFIELDS = 6
+GMEM_MOVEABLE = 0x0002
+
+
+class GDIPLUSSTARTUPINPUT(ctypes.Structure):
+    _fields_ = [
+        ("GdiplusVersion", ctypes.c_uint),
+        ("DebugEventCallback", ctypes.c_void_p),
+        ("SuppressBackgroundThread", wintypes.BOOL),
+        ("SuppressExternalCodecs", wintypes.BOOL),
+    ]
 
 
 def is_format_available(fmt: int) -> bool:
@@ -74,10 +84,165 @@ def dib_to_bmp(dib: bytes) -> bytes | None:
     return b"BM" + struct.pack("<IHHI", file_size, 0, 0, pixel_offset) + dib
 
 
+def pil_image_to_png_bytes(image) -> bytes | None:
+    try:
+        from io import BytesIO
+
+        output = BytesIO()
+        image.save(output, format="PNG")
+        return output.getvalue()
+    except Exception:
+        return None
+
+
+def bmp_to_png_bytes(bmp: bytes) -> bytes | None:
+    try:
+        from io import BytesIO
+        from PIL import Image
+
+        with Image.open(BytesIO(bmp)) as image:
+            return pil_image_to_png_bytes(image)
+    except Exception:
+        return None
+
+
+def image_file_to_dib_bytes(image_path: str) -> bytes | None:
+    try:
+        from io import BytesIO
+        from PIL import Image
+
+        with Image.open(image_path) as image:
+            if image.mode not in ("RGB", "RGBA"):
+                image = image.convert("RGBA" if "A" in image.getbands() else "RGB")
+            output = BytesIO()
+            image.save(output, format="BMP")
+        bmp = output.getvalue()
+        if len(bmp) <= 14 or not bmp.startswith(b"BM"):
+            return None
+        return bmp[14:]
+    except Exception:
+        return None
+
+
+def set_clipboard_dib_bytes(dib: bytes) -> bool:
+    if not dib:
+        return False
+    user32 = ctypes.windll.user32
+    kernel32 = ctypes.windll.kernel32
+    OpenClipboard = user32.OpenClipboard
+    EmptyClipboard = user32.EmptyClipboard
+    SetClipboardData = user32.SetClipboardData
+    CloseClipboard = user32.CloseClipboard
+    GlobalAlloc = kernel32.GlobalAlloc
+    GlobalLock = kernel32.GlobalLock
+    GlobalUnlock = kernel32.GlobalUnlock
+    GlobalFree = kernel32.GlobalFree
+
+    GlobalAlloc.argtypes = [wintypes.UINT, ctypes.c_size_t]
+    GlobalAlloc.restype = ctypes.c_void_p
+    GlobalLock.argtypes = [ctypes.c_void_p]
+    GlobalLock.restype = ctypes.c_void_p
+    GlobalUnlock.argtypes = [ctypes.c_void_p]
+    GlobalUnlock.restype = ctypes.c_int
+    GlobalFree.argtypes = [ctypes.c_void_p]
+    GlobalFree.restype = ctypes.c_void_p
+    SetClipboardData.argtypes = [wintypes.UINT, ctypes.c_void_p]
+    SetClipboardData.restype = ctypes.c_void_p
+
+    handle = GlobalAlloc(GMEM_MOVEABLE, len(dib))
+    if not handle:
+        return False
+    clipboard_owns_handle = False
+    try:
+        ptr = GlobalLock(handle)
+        if not ptr:
+            return False
+        try:
+            ctypes.memmove(ptr, dib, len(dib))
+        finally:
+            GlobalUnlock(handle)
+
+        if not OpenClipboard(None):
+            return False
+        try:
+            EmptyClipboard()
+            if not SetClipboardData(CF_DIB, handle):
+                return False
+            clipboard_owns_handle = True
+            return True
+        finally:
+            CloseClipboard()
+    finally:
+        if not clipboard_owns_handle:
+            GlobalFree(handle)
+
+
+def set_clipboard_bitmap_from_file_gdiplus(image_path: str) -> bool:
+    if os.name != "nt":
+        return False
+    gdiplus = ctypes.windll.gdiplus
+    gdi32 = ctypes.windll.gdi32
+    user32 = ctypes.windll.user32
+    gdiplus.GdiplusStartup.argtypes = [
+        ctypes.POINTER(ctypes.c_size_t),
+        ctypes.POINTER(GDIPLUSSTARTUPINPUT),
+        ctypes.c_void_p,
+    ]
+    gdiplus.GdiplusStartup.restype = ctypes.c_int
+    gdiplus.GdiplusShutdown.argtypes = [ctypes.c_size_t]
+    gdiplus.GdipCreateBitmapFromFile.argtypes = [wintypes.LPCWSTR, ctypes.POINTER(ctypes.c_void_p)]
+    gdiplus.GdipCreateBitmapFromFile.restype = ctypes.c_int
+    gdiplus.GdipCreateHBITMAPFromBitmap.argtypes = [
+        ctypes.c_void_p,
+        ctypes.POINTER(wintypes.HBITMAP),
+        wintypes.DWORD,
+    ]
+    gdiplus.GdipCreateHBITMAPFromBitmap.restype = ctypes.c_int
+    gdiplus.GdipDisposeImage.argtypes = [ctypes.c_void_p]
+    gdiplus.GdipDisposeImage.restype = ctypes.c_int
+    gdi32.DeleteObject.argtypes = [wintypes.HANDLE]
+    gdi32.DeleteObject.restype = wintypes.BOOL
+    token = ctypes.c_size_t()
+    startup_input = GDIPLUSSTARTUPINPUT(1, None, False, False)
+    hbitmap = wintypes.HBITMAP()
+    bitmap = ctypes.c_void_p()
+    started = False
+    clipboard_owns_bitmap = False
+    try:
+        if gdiplus.GdiplusStartup(ctypes.byref(token), ctypes.byref(startup_input), None) != 0:
+            return False
+        started = True
+        if gdiplus.GdipCreateBitmapFromFile(str(image_path), ctypes.byref(bitmap)) != 0 or not bitmap:
+            return False
+        if gdiplus.GdipCreateHBITMAPFromBitmap(bitmap, ctypes.byref(hbitmap), 0x00FFFFFF) != 0 or not hbitmap:
+            return False
+
+        user32.SetClipboardData.argtypes = [wintypes.UINT, ctypes.c_void_p]
+        user32.SetClipboardData.restype = ctypes.c_void_p
+        if not user32.OpenClipboard(None):
+            return False
+        try:
+            user32.EmptyClipboard()
+            if not user32.SetClipboardData(CF_BITMAP, hbitmap):
+                return False
+            clipboard_owns_bitmap = True
+            return True
+        finally:
+            user32.CloseClipboard()
+    finally:
+        if bitmap:
+            gdiplus.GdipDisposeImage(bitmap)
+        if started:
+            gdiplus.GdiplusShutdown(token)
+        if hbitmap and not clipboard_owns_bitmap:
+            gdi32.DeleteObject(hbitmap)
+
 
 APP_ID = "com.gnaht.phoneclipboardsync.room"
 APP_NAME = "LAN Clipboard Sync"
 WINDOWS_APP_USER_MODEL_ID = "com.gnaht.phoneclipboardsync.windows"
+SINGLE_INSTANCE_MUTEX_NAME = "Local\\LANClipboardSyncWindowsSingleInstance"
+SINGLE_INSTANCE_WAKE_EVENT_NAME = "Local\\LANClipboardSyncWindowsWake"
 DISCOVERY_PORT = 8788
 DISCOVERY_INTERVAL_SECONDS = 1.2
 DISCOVERY_TIMEOUT_SECONDS = 10
@@ -96,6 +261,10 @@ WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 WM_TRAYICON = 0x0400 + 20
 TRAY_OPEN_ID = 1001
 TRAY_EXIT_ID = 1002
+ERROR_ALREADY_EXISTS = 183
+EVENT_MODIFY_STATE = 0x0002
+WAIT_OBJECT_0 = 0x00000000
+WAIT_TIMEOUT = 0x00000102
 
 
 if os.name == "nt":
@@ -349,24 +518,109 @@ def configure_windows_app_identity() -> None:
 configure_windows_app_identity()
 
 
+def close_windows_handle(handle) -> None:
+    if os.name != "nt" or not handle:
+        return
+    try:
+        ctypes.windll.kernel32.CloseHandle(handle)
+    except Exception:
+        pass
+
+
+def signal_existing_instance() -> bool:
+    if os.name != "nt":
+        return False
+    kernel32 = ctypes.windll.kernel32
+    kernel32.OpenEventW.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.LPCWSTR]
+    kernel32.OpenEventW.restype = wintypes.HANDLE
+    kernel32.SetEvent.argtypes = [wintypes.HANDLE]
+    kernel32.SetEvent.restype = wintypes.BOOL
+    event_handle = kernel32.OpenEventW(EVENT_MODIFY_STATE, False, SINGLE_INSTANCE_WAKE_EVENT_NAME)
+    if not event_handle:
+        return False
+    try:
+        return bool(kernel32.SetEvent(event_handle))
+    finally:
+        close_windows_handle(event_handle)
+
+
+def acquire_single_instance_handles():
+    if os.name != "nt":
+        return None
+    kernel32 = ctypes.windll.kernel32
+    kernel32.CreateMutexW.argtypes = [ctypes.c_void_p, wintypes.BOOL, wintypes.LPCWSTR]
+    kernel32.CreateMutexW.restype = wintypes.HANDLE
+    kernel32.CreateEventW.argtypes = [ctypes.c_void_p, wintypes.BOOL, wintypes.BOOL, wintypes.LPCWSTR]
+    kernel32.CreateEventW.restype = wintypes.HANDLE
+    kernel32.GetLastError.restype = wintypes.DWORD
+
+    mutex_handle = kernel32.CreateMutexW(None, True, SINGLE_INSTANCE_MUTEX_NAME)
+    if not mutex_handle:
+        return None
+    if kernel32.GetLastError() == ERROR_ALREADY_EXISTS:
+        close_windows_handle(mutex_handle)
+        signal_existing_instance()
+        return None
+
+    wake_event_handle = kernel32.CreateEventW(None, False, False, SINGLE_INSTANCE_WAKE_EVENT_NAME)
+    return mutex_handle, wake_event_handle
+
+
 def now_ms() -> int:
     return int(time.time() * 1000)
 
 
-def local_ipv4() -> str:
+def is_usable_ipv4(address: str) -> bool:
+    try:
+        ip = ipaddress.ip_address(address)
+    except ValueError:
+        return False
+    return ip.version == 4 and not ip.is_loopback and not ip.is_link_local and not ip.is_multicast
+
+
+def local_ipv4_addresses() -> list[str]:
+    addresses: list[str] = []
+
+    def add(address: str) -> None:
+        if is_usable_ipv4(address) and address not in addresses:
+            addresses.append(address)
+
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
             probe.connect(("8.8.8.8", 80))
-            return probe.getsockname()[0]
+            add(probe.getsockname()[0])
     except OSError:
-        try:
-            addresses = socket.gethostbyname_ex(socket.gethostname())[2]
-        except OSError:
-            return ""
-        for address in addresses:
-            if not address.startswith("127.") and not address.startswith("169.254."):
-                return address
-        return ""
+        pass
+
+    try:
+        for address in socket.gethostbyname_ex(socket.gethostname())[2]:
+            add(address)
+    except OSError:
+        pass
+
+    try:
+        for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+            add(info[4][0])
+    except OSError:
+        pass
+
+    return addresses
+
+
+def local_ipv4() -> str:
+    addresses = local_ipv4_addresses()
+    return addresses[0] if addresses else ""
+
+
+def discovery_broadcast_targets(host_ips: list[str]) -> list[str]:
+    targets = ["255.255.255.255"]
+    for host_ip in host_ips:
+        parts = host_ip.split(".")
+        if len(parts) == 4:
+            target = ".".join(parts[:3] + ["255"])
+            if target not in targets:
+                targets.append(target)
+    return targets
 
 
 def new_pair_code() -> str:
@@ -619,8 +873,9 @@ class AppState:
 
 
 class LanClipboardWindowsApp(Tk):
-    def __init__(self):
+    def __init__(self, single_instance_handles=None):
         super().__init__()
+        self.single_instance_handles = single_instance_handles
         self.title(APP_NAME)
         if ICON_PATH.exists():
             self.iconbitmap(default=str(ICON_PATH))
@@ -673,6 +928,7 @@ class LanClipboardWindowsApp(Tk):
         self.protocol("WM_DELETE_WINDOW", self.hide_to_tray)
         self.start_server()
         self.start_advertiser()
+        self.start_single_instance_wake_listener()
         self.after(100, self.process_events)
         self.after(700, self.poll_clipboard)
         self.after(5000, self.save_config)
@@ -765,6 +1021,7 @@ class LanClipboardWindowsApp(Tk):
 
         notebook = ttk.Notebook(self)
         notebook.grid(row=1, column=0, sticky="nsew", padx=16, pady=(0, 12))
+        self.notebook = notebook
 
         main_tab = ttk.Frame(notebook, padding=(0, 12, 0, 0))
         settings_tab = ttk.Frame(notebook, padding=(0, 12, 0, 0))
@@ -1294,7 +1551,8 @@ class LanClipboardWindowsApp(Tk):
 
     def advertise_loop(self) -> None:
         while not self.stop_event.is_set():
-            host_ip = local_ipv4()
+            host_ips = local_ipv4_addresses()
+            host_ip = host_ips[0] if host_ips else ""
             self.post("local_ip", host_ip or "unknown")
             sorted_members = sorted(peer.device_name for peer in self.current_group_members())
             message = {
@@ -1309,12 +1567,32 @@ class LanClipboardWindowsApp(Tk):
             }
             try:
                 data = json.dumps(message, separators=(",", ":")).encode("utf-8")
-                with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
-                    sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-                    sock.sendto(data, ("255.255.255.255", DISCOVERY_PORT))
+                self.send_discovery_advertisement(data, host_ips)
             except OSError as exc:
                 self.post("status", f"Could not advertise: {exc}")
             self.stop_event.wait(DISCOVERY_INTERVAL_SECONDS)
+
+    def send_discovery_advertisement(self, data: bytes, host_ips: list[str]) -> None:
+        bind_ips = host_ips or [""]
+        targets = discovery_broadcast_targets(host_ips)
+        sent_any = False
+        last_error: OSError | None = None
+        for bind_ip in bind_ips:
+            try:
+                with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+                    sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+                    if bind_ip:
+                        sock.bind((bind_ip, 0))
+                    for target in targets:
+                        try:
+                            sock.sendto(data, (target, DISCOVERY_PORT))
+                            sent_any = True
+                        except OSError as exc:
+                            last_error = exc
+            except OSError as exc:
+                last_error = exc
+        if not sent_any and last_error:
+            raise last_error
 
     def advertised_device_id(self) -> str:
         if self.state.role == "CLIENT" and self.state.running:
@@ -1351,6 +1629,7 @@ class LanClipboardWindowsApp(Tk):
         started = time.time()
         seen = set()
         packet_count = 0
+        local_addresses = set(local_ipv4_addresses())
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
                 sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -1385,8 +1664,11 @@ class LanClipboardWindowsApp(Tk):
                         self.post("log", f"Ignored UDP from {address[0]}: not a compatible room advertisement")
                         continue
                     device_id = str(message.get("deviceId") or "")
-                    if device_id in {self.state.device_id, self.state.group_device_id} or device_id in seen:
-                        reason = "self" if device_id == self.state.device_id else "duplicate/group"
+                    if self.is_self_discovery_message(message, address[0], local_addresses):
+                        self.post("log", f"Ignored UDP from {address[0]}: self")
+                        continue
+                    if device_id in seen:
+                        reason = "duplicate/group"
                         self.post("log", f"Ignored UDP from {address[0]}: {reason}")
                         continue
                     seen.add(device_id)
@@ -1409,6 +1691,20 @@ class LanClipboardWindowsApp(Tk):
             self.post("status", f"No compatible devices found ({packet_count} UDP packets received)")
         else:
             self.post("status", "No devices found (no UDP packets received)")
+
+    def is_self_discovery_message(self, message: dict, source_ip: str, local_addresses: set[str]) -> bool:
+        own_ids = {self.state.device_id, self.state.group_device_id, self.advertised_device_id()}
+        device_id = str(message.get("deviceId") or "")
+        if device_id and device_id in own_ids:
+            return True
+        try:
+            packet_port = int(message.get("port") or DEFAULT_PORT)
+        except (TypeError, ValueError):
+            packet_port = DEFAULT_PORT
+        packet_host_ip = str(message.get("hostIp") or source_ip)
+        if packet_port == self.state.port and source_ip in local_addresses:
+            return True
+        return packet_port == self.state.port and packet_host_ip in local_addresses
 
     def add_discovered(self, item: dict) -> None:
         self.discovered = [existing for existing in self.discovered if existing["deviceId"] != item["deviceId"]]
@@ -1547,6 +1843,7 @@ class LanClipboardWindowsApp(Tk):
         ]
         self.pending_requests.append(request)
         self.refresh_pending()
+        self.show_pending_request(request)
 
     def remove_pending_connection(self, conn: WebSocketConnection) -> None:
         before = len(self.pending_requests)
@@ -1582,6 +1879,17 @@ class LanClipboardWindowsApp(Tk):
             self.request_list.selection_set(newest_index)
             self.request_list.activate(newest_index)
             self.request_list.see(newest_index)
+
+    def show_pending_request(self, request: PendingRequest) -> None:
+        action = "invited you to connect" if request.is_invitation else "wants to connect"
+        self.show_from_tray()
+        try:
+            self.notebook.select(0)
+            self.request_list.focus_set()
+        except TclError:
+            pass
+        self.set_status(f"{request.device_name} {action}")
+        self.tray_icon.show_balloon(APP_NAME, f"{request.device_name} {action}")
 
     def accept_selected_request(self) -> None:
         selection = self.request_list.curselection()
@@ -1776,50 +2084,29 @@ class LanClipboardWindowsApp(Tk):
         return None
 
     def get_clipboard_image_bytes(self, allow_bmp_fallback: bool = False) -> tuple[bytes, str, str] | None:
-        temp_path = os.path.join(
-            os.path.expanduser("~"),
-            "AppData",
-            "Local",
-            "Temp",
-            f"clip_image_sync_{uuid.uuid4().hex}.png",
-        )
-        escaped_path = temp_path.replace("'", "''")
-        cmd = (
-            "Add-Type -AssemblyName System.Windows.Forms,System.Drawing; "
-            "$img = [System.Windows.Forms.Clipboard]::GetImage(); "
-            f"if ($img) {{ $img.Save('{escaped_path}', [System.Drawing.Imaging.ImageFormat]::Png); $img.Dispose() }}"
-        )
         try:
-            result = subprocess.run(
-                ["powershell.exe", "-NoProfile", "-Sta", "-Command", cmd],
-                capture_output=True,
-                text=True,
-                timeout=5,
-            )
-            if result.returncode != 0:
-                error = (result.stderr or result.stdout or "").strip()
-                self.add_log(f"Error reading clipboard image: {error or 'PowerShell failed'}")
-                return None
-            if os.path.exists(temp_path):
-                with open(temp_path, "rb") as f:
-                    data = f.read()
-                os.remove(temp_path)
-                return data, "image/png", "png"
-            self.add_log("Clipboard image was detected, but Windows did not return image bytes")
-        except subprocess.TimeoutExpired:
-            self.add_log("Error reading clipboard image: PowerShell timed out")
+            from PIL import Image
+            from PIL import ImageGrab
+
+            grabbed = ImageGrab.grabclipboard()
+            if isinstance(grabbed, Image.Image):
+                png_bytes = pil_image_to_png_bytes(grabbed)
+                if png_bytes:
+                    return png_bytes, "image/png", "png"
+        except ImportError:
+            pass
         except Exception as exc:
-            self.add_log(f"Error reading clipboard image: {exc}")
-        finally:
-            try:
-                if os.path.exists(temp_path):
-                    os.remove(temp_path)
-            except OSError:
-                pass
-        if allow_bmp_fallback:
-            bmp_bytes = self.get_clipboard_dib_image_bytes()
-            if bmp_bytes:
-                return bmp_bytes, "image/bmp", "bmp"
+            self.add_log(f"Error reading clipboard image with Pillow: {exc}")
+
+        bmp_bytes = self.get_clipboard_dib_image_bytes()
+        if bmp_bytes:
+            png_bytes = bmp_to_png_bytes(bmp_bytes)
+            if png_bytes:
+                return png_bytes, "image/png", "png"
+            return bmp_bytes, "image/bmp", "bmp"
+
+        if is_format_available(CF_BITMAP):
+            self.add_log("Clipboard bitmap was detected, but Windows did not return image bytes")
         return None
 
     def read_clipboard(self) -> str:
@@ -2091,17 +2378,15 @@ class LanClipboardWindowsApp(Tk):
 
     def copy_image_to_windows_clipboard(self, image_path: str) -> None:
         abs_path = os.path.abspath(image_path)
-        escaped_path = abs_path.replace("'", "''")
-        cmd = (
-            f"Add-Type -AssemblyName System.Windows.Forms, System.Drawing; "
-            f"$img = [System.Drawing.Image]::FromFile('{escaped_path}'); "
-            f"[System.Windows.Forms.Clipboard]::SetImage($img); "
-            f"$img.Dispose()"
-        )
         try:
-            subprocess.run(["powershell.exe", "-NoProfile", "-Command", cmd], shell=True, capture_output=True)
+            dib_bytes = image_file_to_dib_bytes(abs_path)
+            if dib_bytes and set_clipboard_dib_bytes(dib_bytes):
+                return
+            if set_clipboard_bitmap_from_file_gdiplus(abs_path):
+                return
+            self.add_log("Could not copy image to Windows clipboard")
         except Exception as exc:
-            self.add_log(f"PowerShell error copying image: {exc}")
+            self.add_log(f"Error copying image to Windows clipboard: {exc}")
 
     def prune_suppressions(self, current_time: float) -> None:
         expired = [text for text, expires_at in self.suppressed_remote.items() if expires_at <= current_time]
@@ -2206,6 +2491,26 @@ class LanClipboardWindowsApp(Tk):
         self.lift()
         self.focus_force()
 
+    def start_single_instance_wake_listener(self) -> None:
+        if os.name != "nt" or not self.single_instance_handles:
+            return
+        _mutex_handle, wake_event_handle = self.single_instance_handles
+        if not wake_event_handle:
+            return
+        threading.Thread(target=self.single_instance_wake_loop, args=(wake_event_handle,), daemon=True).start()
+
+    def single_instance_wake_loop(self, wake_event_handle) -> None:
+        kernel32 = ctypes.windll.kernel32
+        kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+        kernel32.WaitForSingleObject.restype = wintypes.DWORD
+        while not self.stop_event.is_set():
+            result = kernel32.WaitForSingleObject(wake_event_handle, 500)
+            if result == WAIT_OBJECT_0:
+                self.post("tray_open")
+                self.post("status", "Already running; opened existing window")
+            elif result != WAIT_TIMEOUT:
+                break
+
     def notify_received(self, title: str, message: str) -> None:
         if self.notify_sound.get():
             try:
@@ -2282,5 +2587,8 @@ class LanClipboardWindowsApp(Tk):
 
 
 if __name__ == "__main__":
-    app = LanClipboardWindowsApp()
+    single_instance_handles = acquire_single_instance_handles()
+    if os.name == "nt" and not single_instance_handles:
+        sys.exit(0)
+    app = LanClipboardWindowsApp(single_instance_handles)
     app.mainloop()
