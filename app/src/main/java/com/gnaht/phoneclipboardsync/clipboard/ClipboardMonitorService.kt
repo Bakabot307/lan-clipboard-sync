@@ -20,14 +20,7 @@ class ClipboardMonitorService : Service() {
     }
 
     private val clipboardListener = android.content.ClipboardManager.OnPrimaryClipChangedListener {
-        val currentText = clipboardManager.primaryClip
-            ?.takeIf { it.itemCount > 0 }
-            ?.getItemAt(0)
-            ?.coerceToText(this)
-            ?.toString()
-            .orEmpty()
-
-        controller.onClipboardChanged(currentText)
+        controller.onClipboardChanged()
     }
 
     override fun onCreate() {

@@ -59,10 +59,12 @@ class LanSessionManager(
 
     private val _sessionState = MutableStateFlow(SessionState())
     private val _incomingClips = MutableSharedFlow<ClipPayload>(extraBufferCapacity = 32)
+    private val _incomingBinaryClips = MutableSharedFlow<Pair<BinaryClipMetadata, ByteArray>>(extraBufferCapacity = 32)
     private val _localIpAddress = MutableStateFlow(NetworkUtils.findLocalIpv4Address())
 
     val sessionState: StateFlow<SessionState> = _sessionState.asStateFlow()
     val incomingClips = _incomingClips
+    val incomingBinaryClips = _incomingBinaryClips
     val localIpAddress: StateFlow<String> = _localIpAddress.asStateFlow()
 
     fun updateLocalConfig(config: SessionConfig) {
@@ -301,6 +303,29 @@ class LanSessionManager(
         return delivered
     }
 
+    fun publishLocalBinaryClip(metadata: BinaryClipMetadata, fileBytes: ByteArray): Boolean {
+        val delivered = when (activeConfig?.role) {
+            SessionRole.HOST -> {
+                val hasPeers = _sessionState.value.connectedPeers.isNotEmpty()
+                if (hasPeers) {
+                    server?.relayBinaryClipboard(metadata, fileBytes)
+                }
+                hasPeers
+            }
+            SessionRole.CLIENT -> client?.sendBinaryClip(metadata, fileBytes) == true
+            null -> false
+        }
+
+        updateStatus(
+            if (delivered) {
+                "Clipboard sent"
+            } else {
+                "No connected devices to receive clipboard"
+            },
+        )
+        return delivered
+    }
+
     fun markRemoteClipReceived(sourceDeviceName: String) {
         updateStatus("Received clipboard from $sourceDeviceName")
     }
@@ -318,9 +343,13 @@ class LanSessionManager(
             getHostDeviceId = { activeConfig?.deviceId ?: localConfig?.deviceId ?: config.deviceId },
             onStatus = { updateStatus(it) },
             onJoinRequest = { request -> addPendingRequest(request) },
+            onPendingJoinRequestsChanged = { requests -> syncPendingJoinRequests(requests) },
+            shouldAcceptSimultaneousJoin = { deviceId -> shouldAcceptSimultaneousJoin(deviceId) },
+            onAcceptSimultaneousJoin = { deviceId -> acceptSimultaneousJoinAsHost(deviceId) },
             onInviteReceived = { request -> handleIncomingInvitation(request) },
             onPeersChanged = { updatePeers(it) },
             onRemoteClip = { payload -> scope.launch { _incomingClips.emit(payload) } },
+            onRemoteBinaryClip = { metadata, bytes -> handleIncomingBinaryClip(metadata, bytes) },
         ).also { it.start() }
     }
 
@@ -346,6 +375,7 @@ class LanSessionManager(
         updateLocalConfig(config)
         client?.close()
         client = null
+        server?.clearRoom("Connected to another device")
         activeConfig = config
 
         if (config.hostIp.isBlank()) {
@@ -362,6 +392,7 @@ class LanSessionManager(
                 localAddress = _localIpAddress.value,
                 statusMessage = "Connecting to ${config.hostIp}:${config.port}",
                 connectedPeers = emptyList(),
+                pendingRequests = emptyList(),
             )
         }
 
@@ -374,8 +405,13 @@ class LanSessionManager(
                 pairCode = config.pairCode,
             ),
             json = json,
-            onStatus = { updateStatus(it) },
-            onAccepted = { hostName, hostDeviceId, peers ->
+            onStatus = {
+                if (client === newClient) {
+                    updateStatus(it)
+                }
+            },
+            onAccepted = accepted@{ hostName, hostDeviceId, peers ->
+                if (client !== newClient) return@accepted
                 if (hostDeviceId.isNotBlank()) {
                     activeGroupDeviceId = hostDeviceId
                 }
@@ -391,10 +427,12 @@ class LanSessionManager(
                     )
                 }
             },
-            onRejected = { reason ->
+            onRejected = rejected@{ reason ->
+                if (client !== newClient) return@rejected
                 _sessionState.update { it.copy(isRunning = false, statusMessage = reason) }
             },
-            onPeerList = { peers ->
+            onPeerList = peerList@{ peers ->
+                if (client !== newClient) return@peerList
                 val allPeers = peers.toPeerInfos()
                 val remotePeers = allPeers.filterNot { it.deviceId == config.deviceId }
                 visibleGroupMembers = allPeers
@@ -410,7 +448,16 @@ class LanSessionManager(
                     }
                 }
             },
-            onRemoteClip = { payload -> scope.launch { _incomingClips.emit(payload) } },
+            onRemoteClip = { payload ->
+                if (client === newClient) {
+                    scope.launch { _incomingClips.emit(payload) }
+                }
+            },
+            onRemoteBinaryClip = { metadata, bytes ->
+                if (client === newClient) {
+                    handleIncomingBinaryClip(metadata, bytes)
+                }
+            },
             onClosed = { reason -> handleClientClosed(newClient, reason) },
         ).also {
             client = it
@@ -534,6 +581,40 @@ class LanSessionManager(
         }
     }
 
+    private fun syncPendingJoinRequests(requests: List<ConnectionRequest>) {
+        _sessionState.update { state ->
+            state.copy(
+                pendingRequests = state.pendingRequests.filter { it.isInvitation } + requests,
+            )
+        }
+    }
+
+    private fun shouldAcceptSimultaneousJoin(deviceId: String): Boolean {
+        val config = localConfig ?: return false
+        return activeConfig?.role == SessionRole.CLIENT &&
+            !_sessionState.value.isRunning &&
+            activeGroupDeviceId == deviceId &&
+            config.deviceId > deviceId
+    }
+
+    private fun acceptSimultaneousJoinAsHost(deviceId: String) {
+        val config = localConfig ?: return
+        client?.close()
+        client = null
+        activeConfig = config.copy(role = SessionRole.HOST)
+        activeGroupDeviceId = config.deviceId
+        visibleGroupMembers = listOf(PeerInfo(config.deviceId, config.deviceName))
+        _sessionState.update {
+            it.copy(
+                isRunning = false,
+                role = SessionRole.HOST,
+                connectedPeers = emptyList(),
+                pendingRequests = emptyList(),
+                statusMessage = "Resolving simultaneous connection with $deviceId",
+            )
+        }
+    }
+
     private fun handleIncomingInvitation(request: ConnectionRequest) {
         if (localConfig?.autoConnectEnabled == true) {
             updateStatus("Auto-accepting invitation from ${request.deviceName}")
@@ -575,6 +656,12 @@ class LanSessionManager(
             if (multicastLock.isHeld) {
                 multicastLock.release()
             }
+        }
+    }
+
+    private fun handleIncomingBinaryClip(metadata: BinaryClipMetadata, bytes: ByteArray) {
+        scope.launch {
+            _incomingBinaryClips.emit(metadata to bytes)
         }
     }
 

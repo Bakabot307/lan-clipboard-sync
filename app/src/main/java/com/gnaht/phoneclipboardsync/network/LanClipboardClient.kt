@@ -17,6 +17,7 @@ class LanClipboardClient(
     private val onRejected: (String) -> Unit,
     private val onPeerList: (List<PeerWire>) -> Unit,
     private val onRemoteClip: (ClipPayload) -> Unit,
+    private val onRemoteBinaryClip: (BinaryClipMetadata, ByteArray) -> Unit,
     private val onClosed: (String) -> Unit,
 ) : WebSocketClient(serverUri) {
     private var accepted = false
@@ -52,6 +53,22 @@ class LanClipboardClient(
         }
     }
 
+    override fun onMessage(bytes: java.nio.ByteBuffer?) {
+        if (bytes == null) return
+        runCatching {
+            val jsonLen = bytes.getInt()
+            val jsonBytes = ByteArray(jsonLen)
+            bytes.get(jsonBytes)
+            val metadataJson = String(jsonBytes, Charsets.UTF_8)
+            val metadata = json.decodeFromString<BinaryClipMetadata>(metadataJson)
+            
+            val fileBytes = ByteArray(bytes.remaining())
+            bytes.get(fileBytes)
+            
+            onRemoteBinaryClip(metadata, fileBytes)
+        }
+    }
+
     override fun onClose(code: Int, reason: String?, remote: Boolean) {
         accepted = false
         val message = reason?.takeIf { it.isNotBlank() } ?: "Disconnected"
@@ -69,6 +86,21 @@ class LanClipboardClient(
         send(json.encodeToString<WireMessage>(ClipMessage(payload)))
         return true
     }
+
+    fun sendBinaryClip(metadata: BinaryClipMetadata, fileBytes: ByteArray): Boolean {
+        if (!accepted || !isOpen) return false
+
+        runCatching {
+            val metadataJson = json.encodeToString(metadata)
+            val jsonBytes = metadataJson.toByteArray(Charsets.UTF_8)
+            val buffer = java.nio.ByteBuffer.allocate(4 + jsonBytes.size + fileBytes.size).apply {
+                putInt(jsonBytes.size)
+                put(jsonBytes)
+                put(fileBytes)
+                flip()
+            }
+            send(buffer)
+        }
+        return true
+    }
 }
-
-

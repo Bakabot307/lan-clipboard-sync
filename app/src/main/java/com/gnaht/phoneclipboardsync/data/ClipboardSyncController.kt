@@ -6,13 +6,16 @@ import android.app.NotificationManager
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
 import com.gnaht.phoneclipboardsync.R
 import com.gnaht.phoneclipboardsync.network.LanSessionManager
+import com.gnaht.phoneclipboardsync.network.BinaryClipMetadata
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -83,6 +86,50 @@ class ClipboardSyncController(
                     clipboardManager.setPrimaryClip(
                         ClipData.newPlainText("LAN clipboard", payload.text),
                     )
+                }
+            }
+        }
+        scope.launch {
+            sessionManager.incomingBinaryClips.collectLatest { (metadata, fileBytes) ->
+                if (metadata.sourceDeviceId == config.value.deviceId) {
+                    return@collectLatest
+                }
+
+                if (!metadata.mimeType.startsWith("image/")) {
+                    return@collectLatest
+                }
+
+                val displayName = metadata.fileName
+                val displayText = "[Image] $displayName"
+
+                addHistory(
+                    HistoryEntry(
+                        clipId = metadata.clipId,
+                        sourceDeviceName = metadata.sourceDeviceName,
+                        text = displayText,
+                        timestamp = metadata.timestamp,
+                        direction = HistoryDirection.RECEIVED,
+                    ),
+                )
+                sessionManager.markRemoteClipReceived(metadata.sourceDeviceName)
+                showReceivedBinaryNotification(metadata)
+
+                if (config.value.autoCopyEnabled) {
+                    runCatching {
+                        val dir = java.io.File(applicationContext.cacheDir, "clipboard_sync").apply { mkdirs() }
+                        dir.listFiles()?.forEach { it.delete() }
+                        val file = java.io.File(dir, metadata.fileName)
+                        file.writeBytes(fileBytes)
+
+                        val fileUri = androidx.core.content.FileProvider.getUriForFile(
+                            applicationContext,
+                            "${applicationContext.packageName}.provider",
+                            file
+                        )
+
+                        val clip = ClipData.newUri(applicationContext.contentResolver, metadata.fileName, fileUri)
+                        clipboardManager.setPrimaryClip(clip)
+                    }
                 }
             }
         }
@@ -186,46 +233,139 @@ class ClipboardSyncController(
     }
 
     fun onClipboardChanged(text: String) {
-        if (text.isBlank()) return
+        onClipboardChanged()
+    }
 
-        val now = System.currentTimeMillis()
-        if (shouldSuppressRemoteClipboardEcho(text, now)) {
-            return
+    fun onClipboardChanged() {
+        val clipData = clipboardManager.primaryClip ?: return
+        if (clipData.itemCount == 0) return
+        val item = clipData.getItemAt(0)
+        
+        val uri = item.uri
+        if (uri != null) {
+            if (uri.authority == "${applicationContext.packageName}.provider") {
+                return
+            }
+            
+            val mimeType = applicationContext.contentResolver.getType(uri) ?: "application/octet-stream"
+            if (!mimeType.startsWith("image/")) {
+                return
+            }
+            var fileName = "file"
+            
+            val cursor = applicationContext.contentResolver.query(uri, null, null, null, null)
+            cursor?.use {
+                if (it.moveToFirst()) {
+                    val nameIndex = it.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+                    if (nameIndex != -1) {
+                        fileName = it.getString(nameIndex)
+                    }
+                }
+            }
+            if (fileName == "file" && uri.scheme == "file") {
+                fileName = uri.lastPathSegment ?: "file"
+            }
+            if (!fileName.contains(".") && mimeType.startsWith("image/")) {
+                val ext = mimeType.substringAfter("/", "png").takeUnless { it == "*" }.orEmpty().ifBlank { "png" }
+                fileName = "$fileName.$ext"
+            }
+
+            val fileSize = runCatching {
+                applicationContext.contentResolver.openAssetFileDescriptor(uri, "r")?.use { it.length }
+            }.getOrNull() ?: -1L
+            if (fileSize > 35 * 1024 * 1024) {
+                return
+            }
+
+            val bytes = runCatching {
+                applicationContext.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+            }.getOrNull() ?: return
+            
+            val metadata = BinaryClipMetadata(
+                clipId = UUID.randomUUID().toString(),
+                sourceDeviceId = config.value.deviceId,
+                sourceDeviceName = config.value.deviceName,
+                fileName = fileName,
+                mimeType = mimeType,
+                timestamp = System.currentTimeMillis()
+            )
+            
+            if (!sessionManager.publishLocalBinaryClip(metadata, bytes)) return
+            
+            addHistory(
+                HistoryEntry(
+                    clipId = metadata.clipId,
+                    sourceDeviceName = metadata.sourceDeviceName,
+                    text = "[Image] $fileName",
+                    timestamp = metadata.timestamp,
+                    direction = HistoryDirection.SENT,
+                )
+            )
+        } else {
+            val text = item.coerceToText(applicationContext)?.toString().orEmpty()
+            if (text.isBlank()) return
+
+            val now = System.currentTimeMillis()
+            if (shouldSuppressRemoteClipboardEcho(text, now)) {
+                return
+            }
+
+            if (isDuplicateOutgoingClipboard(text, now)) {
+                return
+            }
+
+            val payload = ClipPayload(
+                clipId = UUID.randomUUID().toString(),
+                sourceDeviceId = config.value.deviceId,
+                sourceDeviceName = config.value.deviceName,
+                text = text,
+                timestamp = System.currentTimeMillis(),
+            )
+
+            if (!sessionManager.publishLocalClip(payload)) return
+            lastPublishedClipboardText = text
+            lastPublishedClipboardAtMs = now
+
+            addHistory(
+                HistoryEntry(
+                    clipId = payload.clipId,
+                    sourceDeviceName = payload.sourceDeviceName,
+                    text = payload.text,
+                    timestamp = payload.timestamp,
+                    direction = HistoryDirection.SENT,
+                ),
+            )
         }
-
-        if (isDuplicateOutgoingClipboard(text, now)) {
-            return
-        }
-
-        val payload = ClipPayload(
-            clipId = UUID.randomUUID().toString(),
-            sourceDeviceId = config.value.deviceId,
-            sourceDeviceName = config.value.deviceName,
-            text = text,
-            timestamp = System.currentTimeMillis(),
-        )
-
-        if (!sessionManager.publishLocalClip(payload)) return
-        lastPublishedClipboardText = text
-        lastPublishedClipboardAtMs = now
-
-        addHistory(
-            HistoryEntry(
-                clipId = payload.clipId,
-                sourceDeviceName = payload.sourceDeviceName,
-                text = payload.text,
-                timestamp = payload.timestamp,
-                direction = HistoryDirection.SENT,
-            ),
-        )
     }
 
     fun suppressClipboardSync(text: String) {
         suppressRemoteClipboardEcho(text)
     }
 
-    fun sendTextDirectly(text: String) {
-        if (text.isBlank()) return
+    fun sendSharedIntent(intent: Intent): Boolean {
+        return when (intent.action) {
+            Intent.ACTION_SEND -> {
+                val streamUri = intent.getStreamUri()
+                if (streamUri != null) {
+                    sendUriDirectly(streamUri, intent.type)
+                } else {
+                    sendTextDirectly(intent.getSharedText().orEmpty())
+                }
+            }
+            Intent.ACTION_SEND_MULTIPLE -> {
+                val streamUris = intent.getStreamUris()
+                if (streamUris.isNotEmpty()) {
+                    streamUris.map { uri -> sendUriDirectly(uri, intent.type) }.any { it }
+                } else {
+                    sendTextDirectly(intent.getSharedText().orEmpty())
+                }
+            }
+            else -> false
+        }
+    }
+
+    fun sendTextDirectly(text: String): Boolean {
+        if (text.isBlank()) return false
 
         val payload = ClipPayload(
             clipId = UUID.randomUUID().toString(),
@@ -235,7 +375,7 @@ class ClipboardSyncController(
             timestamp = System.currentTimeMillis(),
         )
 
-        if (!sessionManager.publishLocalClip(payload)) return
+        if (!sessionManager.publishLocalClip(payload)) return false
         lastPublishedClipboardText = text
         lastPublishedClipboardAtMs = System.currentTimeMillis()
 
@@ -248,6 +388,101 @@ class ClipboardSyncController(
                 direction = HistoryDirection.SENT,
             ),
         )
+        return true
+    }
+
+    private fun sendUriDirectly(uri: Uri, sharedMimeType: String?): Boolean {
+        if (uri.authority == "${applicationContext.packageName}.provider") {
+            return false
+        }
+
+        val mimeType = sharedMimeType
+            ?.takeUnless { it.isBlank() || it == "*/*" }
+            ?: applicationContext.contentResolver.getType(uri)
+            ?: "application/octet-stream"
+        if (!mimeType.startsWith("image/")) {
+            return false
+        }
+        val fileName = resolveFileName(uri, mimeType)
+
+        val fileSize = runCatching {
+            applicationContext.contentResolver.openAssetFileDescriptor(uri, "r")?.use { it.length }
+        }.getOrNull() ?: -1L
+        if (fileSize > 35 * 1024 * 1024) {
+            return false
+        }
+
+        val bytes = runCatching {
+            applicationContext.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+        }.getOrNull() ?: return false
+
+        val metadata = BinaryClipMetadata(
+            clipId = UUID.randomUUID().toString(),
+            sourceDeviceId = config.value.deviceId,
+            sourceDeviceName = config.value.deviceName,
+            fileName = fileName,
+            mimeType = mimeType,
+            timestamp = System.currentTimeMillis(),
+        )
+
+        if (!sessionManager.publishLocalBinaryClip(metadata, bytes)) return false
+
+        addHistory(
+            HistoryEntry(
+                clipId = metadata.clipId,
+                sourceDeviceName = metadata.sourceDeviceName,
+                text = "[Image] $fileName",
+                timestamp = metadata.timestamp,
+                direction = HistoryDirection.SENT,
+            ),
+        )
+        return true
+    }
+
+    private fun resolveFileName(uri: Uri, mimeType: String): String {
+        var fileName = "file"
+
+        val cursor = applicationContext.contentResolver.query(uri, null, null, null, null)
+        cursor?.use {
+            if (it.moveToFirst()) {
+                val nameIndex = it.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+                if (nameIndex != -1) {
+                    fileName = it.getString(nameIndex)
+                }
+            }
+        }
+        if (fileName == "file" && uri.scheme == "file") {
+            fileName = uri.lastPathSegment ?: "file"
+        }
+        if (!fileName.contains(".") && mimeType.startsWith("image/")) {
+            val ext = mimeType.substringAfter("/", "png").takeUnless { it == "*" }.orEmpty().ifBlank { "png" }
+            fileName = "$fileName.$ext"
+        }
+        return fileName
+    }
+
+    private fun Intent.getSharedText(): String? {
+        return getCharSequenceExtra(Intent.EXTRA_TEXT)?.toString()
+            ?: getStringExtra(Intent.EXTRA_HTML_TEXT)
+            ?: getStringExtra(Intent.EXTRA_SUBJECT)
+    }
+
+    private fun Intent.getStreamUri(): Uri? {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java)
+        } else {
+            @Suppress("DEPRECATION")
+            getParcelableExtra(Intent.EXTRA_STREAM)
+        }
+    }
+
+    private fun Intent.getStreamUris(): List<Uri> {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            getParcelableArrayListExtra(Intent.EXTRA_STREAM, Uri::class.java).orEmpty()
+        } else {
+            @Suppress("DEPRECATION")
+            getParcelableArrayListExtra<Uri>(Intent.EXTRA_STREAM).orEmpty()
+        }
     }
 
     private fun addHistory(entry: HistoryEntry) {
@@ -321,6 +556,33 @@ class ClipboardSyncController(
             .setContentTitle(applicationContext.getString(R.string.received_notification_title))
             .setContentText("${payload.sourceDeviceName}: $preview")
             .setStyle(NotificationCompat.BigTextStyle().bigText(payload.text.take(NOTIFICATION_BIG_TEXT_LENGTH)))
+            .setAutoCancel(true)
+            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+            .build()
+
+        NotificationManagerCompat.from(applicationContext).notify(
+            (System.currentTimeMillis() % Int.MAX_VALUE).toInt(),
+            notification,
+        )
+    }
+
+    private fun showReceivedBinaryNotification(metadata: BinaryClipMetadata) {
+        if (!config.value.receivedNotificationsEnabled) {
+            return
+        }
+
+        if (
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(applicationContext, Manifest.permission.POST_NOTIFICATIONS) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            return
+        }
+
+        val notification = NotificationCompat.Builder(applicationContext, RECEIVED_CHANNEL_ID)
+            .setSmallIcon(R.drawable.ic_stat_clipboard)
+            .setContentTitle(applicationContext.getString(R.string.received_notification_title))
+            .setContentText("${metadata.sourceDeviceName}: Received Image - ${metadata.fileName}")
             .setAutoCancel(true)
             .setPriority(NotificationCompat.PRIORITY_DEFAULT)
             .build()

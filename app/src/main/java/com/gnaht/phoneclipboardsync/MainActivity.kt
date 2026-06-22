@@ -1,4 +1,4 @@
-﻿package com.gnaht.phoneclipboardsync
+package com.gnaht.phoneclipboardsync
 
 import android.Manifest
 import android.content.ClipboardManager
@@ -17,6 +17,7 @@ import com.gnaht.phoneclipboardsync.ui.theme.LanClipboardTheme
 class MainActivity : ComponentActivity() {
     private var sendClipboardWhenResumed = false
     private var returnAfterNotificationSend = false
+    private var pendingShareIntent: Intent? = null
 
     private val controller by lazy { (application as LanClipboardApplication).controller }
     private val clipboardManager by lazy {
@@ -25,14 +26,7 @@ class MainActivity : ComponentActivity() {
     private val clipboardListener = ClipboardManager.OnPrimaryClipChangedListener {
         if (!controller.monitorRunning.value) return@OnPrimaryClipChangedListener
 
-        val currentText = clipboardManager.primaryClip
-            ?.takeIf { it.itemCount > 0 }
-            ?.getItemAt(0)
-            ?.coerceToText(this)
-            ?.toString()
-            .orEmpty()
-
-        controller.onClipboardChanged(currentText)
+        controller.onClipboardChanged()
     }
 
     private val notificationPermissionLauncher = registerForActivityResult(
@@ -42,8 +36,8 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        handleIntent(intent)
         controller.prepareForUse()
+        handleIntent(intent)
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
@@ -73,6 +67,7 @@ class MainActivity : ComponentActivity() {
             clipboardManager.addPrimaryClipChangedListener(clipboardListener)
         }
         window.decorView.post {
+            sendPendingShareIfNeeded()
             sendPendingClipboardIfNeeded()
         }
     }
@@ -89,15 +84,32 @@ class MainActivity : ComponentActivity() {
         setIntent(intent)
         handleIntent(intent)
         window.decorView.post {
+            sendPendingShareIfNeeded()
             sendPendingClipboardIfNeeded()
         }
     }
 
     private fun handleIntent(intent: Intent?) {
-        if (intent?.action == ACTION_SEND_CURRENT_CLIPBOARD) {
-            sendClipboardWhenResumed = true
-            returnAfterNotificationSend = controller.config.value.returnAfterNotificationSend
-            intent.action = null
+        when (intent?.action) {
+            ACTION_SEND_CURRENT_CLIPBOARD -> {
+                sendClipboardWhenResumed = true
+                returnAfterNotificationSend = controller.config.value.returnAfterNotificationSend
+                intent.action = null
+            }
+            Intent.ACTION_SEND,
+            Intent.ACTION_SEND_MULTIPLE -> {
+                pendingShareIntent = Intent(intent)
+                intent.action = null
+            }
+        }
+    }
+
+    private fun sendPendingShareIfNeeded() {
+        val shareIntent = pendingShareIntent ?: return
+        pendingShareIntent = null
+
+        if (controller.sendSharedIntent(shareIntent)) {
+            window.decorView.post { finish() }
         }
     }
 
@@ -105,14 +117,7 @@ class MainActivity : ComponentActivity() {
         if (!sendClipboardWhenResumed) return
         sendClipboardWhenResumed = false
 
-        val currentText = clipboardManager.primaryClip
-            ?.takeIf { it.itemCount > 0 }
-            ?.getItemAt(0)
-            ?.coerceToText(this)
-            ?.toString()
-            .orEmpty()
-
-        controller.onClipboardChanged(currentText)
+        controller.onClipboardChanged()
         if (returnAfterNotificationSend) {
             returnAfterNotificationSend = false
             window.decorView.post { finish() }

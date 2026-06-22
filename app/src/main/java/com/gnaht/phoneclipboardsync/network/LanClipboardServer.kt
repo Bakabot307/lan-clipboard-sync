@@ -21,9 +21,13 @@ class LanClipboardServer(
     private val getHostDeviceId: () -> String,
     private val onStatus: (String) -> Unit,
     private val onJoinRequest: (ConnectionRequest) -> Unit,
+    private val onPendingJoinRequestsChanged: (List<ConnectionRequest>) -> Unit,
+    private val shouldAcceptSimultaneousJoin: (String) -> Boolean,
+    private val onAcceptSimultaneousJoin: (String) -> Unit,
     private val onInviteReceived: (ConnectionRequest) -> Unit,
     private val onPeersChanged: (List<PeerInfo>) -> Unit,
     private val onRemoteClip: (ClipPayload) -> Unit,
+    private val onRemoteBinaryClip: (BinaryClipMetadata, ByteArray) -> Unit,
 ) : WebSocketServer(InetSocketAddress(port)) {
     private val peers = linkedMapOf<WebSocket, PeerInfo>()
     private val pendingJoins = linkedMapOf<String, Pair<WebSocket, PeerInfo>>()
@@ -40,6 +44,7 @@ class LanClipboardServer(
         val pendingEntry = pendingJoins.entries.firstOrNull { it.value.first == conn }
         if (pendingEntry != null) {
             pendingJoins.remove(pendingEntry.key)
+            publishPendingJoinRequests()
         }
 
         if (removedPeer) {
@@ -60,6 +65,28 @@ class LanClipboardServer(
         }
     }
 
+    override fun onMessage(conn: org.java_websocket.WebSocket?, message: java.nio.ByteBuffer?) {
+        if (conn == null || message == null) return
+        if (!peers.containsKey(conn)) {
+            conn.close(4403, "Connect first")
+            return
+        }
+
+        runCatching {
+            val jsonLen = message.getInt()
+            val jsonBytes = ByteArray(jsonLen)
+            message.get(jsonBytes)
+            val metadataJson = String(jsonBytes, Charsets.UTF_8)
+            val metadata = json.decodeFromString<BinaryClipMetadata>(metadataJson)
+
+            val fileBytes = ByteArray(message.remaining())
+            message.get(fileBytes)
+
+            relayBinaryClipboard(metadata, fileBytes, exclude = conn)
+            onRemoteBinaryClip(metadata, fileBytes)
+        }
+    }
+
     override fun onError(conn: WebSocket?, ex: Exception?) {
         onStatus(ex?.message ?: "LAN connection error")
     }
@@ -75,6 +102,7 @@ class LanClipboardServer(
     fun acceptJoin(deviceId: String) {
         val pending = pendingJoins.remove(deviceId) ?: return
         acceptPeer(pending.first, pending.second)
+        publishPendingJoinRequests()
     }
 
     fun rejectJoin(deviceId: String) {
@@ -85,23 +113,25 @@ class LanClipboardServer(
             ),
         )
         pending.first.close(4403, "Connection rejected")
+        publishPendingJoinRequests()
     }
 
-    fun clearRoom() {
+    fun clearRoom(reason: String = "Sharing group closed") {
         pendingJoins.values.forEach { (socket, _) ->
             runCatching {
                 socket.send(
                     json.encodeToString<WireMessage>(
-                        JoinResponseMessage(accepted = false, reason = "Sharing group closed"),
+                        JoinResponseMessage(accepted = false, reason = reason),
                     ),
                 )
-                socket.close(4404, "Sharing group closed")
+                socket.close(4404, reason)
             }
         }
         pendingJoins.clear()
+        publishPendingJoinRequests()
 
         peers.keys.forEach { socket ->
-            runCatching { socket.close(1000, "Sharing group closed") }
+            runCatching { socket.close(1000, reason) }
         }
         peers.clear()
         onPeersChanged(emptyList())
@@ -109,9 +139,28 @@ class LanClipboardServer(
 
     fun relayClipboard(payload: ClipPayload, exclude: WebSocket? = null) {
         val encoded = json.encodeToString<WireMessage>(ClipMessage(payload))
-        peers.keys.forEach { socket ->
-            if (socket != exclude && socket.isOpen) {
+        peers.forEach { (socket, peer) ->
+            if (socket != exclude && peer.deviceId != payload.sourceDeviceId && socket.isOpen) {
                 socket.send(encoded)
+            }
+        }
+    }
+
+    fun relayBinaryClipboard(metadata: BinaryClipMetadata, fileBytes: ByteArray, exclude: WebSocket? = null) {
+        runCatching {
+            val metadataJson = json.encodeToString(metadata)
+            val jsonBytes = metadataJson.toByteArray(Charsets.UTF_8)
+            val buffer = java.nio.ByteBuffer.allocate(4 + jsonBytes.size + fileBytes.size).apply {
+                putInt(jsonBytes.size)
+                put(jsonBytes)
+                put(fileBytes)
+                flip()
+            }
+            val array = buffer.array()
+            peers.forEach { (socket, peer) ->
+                if (socket != exclude && peer.deviceId != metadata.sourceDeviceId && socket.isOpen) {
+                    socket.send(java.nio.ByteBuffer.wrap(array))
+                }
             }
         }
     }
@@ -122,13 +171,17 @@ class LanClipboardServer(
 
     private fun handleHello(conn: WebSocket, message: HelloMessage) {
         if (!isRoomOpen()) {
-            conn.send(
-                json.encodeToString<WireMessage>(
-                    JoinResponseMessage(accepted = false, reason = "Device is already in another group"),
-                ),
-            )
-            conn.close(4404, "Device is already in another group")
-            return
+            if (shouldAcceptSimultaneousJoin(message.deviceId)) {
+                onAcceptSimultaneousJoin(message.deviceId)
+            } else {
+                conn.send(
+                    json.encodeToString<WireMessage>(
+                        JoinResponseMessage(accepted = false, reason = "Using outbound connection"),
+                    ),
+                )
+                conn.close(4404, "Using outbound connection")
+                return
+            }
         }
 
         if (message.pairCode != getRoomCode()) {
@@ -152,6 +205,16 @@ class LanClipboardServer(
             return
         }
 
+        pendingJoins.remove(message.deviceId)?.first?.let { existing ->
+            runCatching {
+                existing.send(
+                    json.encodeToString<WireMessage>(
+                        JoinResponseMessage(accepted = false, reason = "Connection request replaced"),
+                    ),
+                )
+                existing.close(4409, "Connection request replaced")
+            }
+        }
         pendingJoins[message.deviceId] = conn to peer
         onJoinRequest(
             ConnectionRequest(
@@ -163,6 +226,7 @@ class LanClipboardServer(
                 isInvitation = false,
             ),
         )
+        publishPendingJoinRequests()
         onStatus("${message.deviceName} requested to connect")
     }
 
@@ -220,6 +284,21 @@ class LanClipboardServer(
                 socket.send(encoded)
             }
         }
+    }
+
+    private fun publishPendingJoinRequests() {
+        onPendingJoinRequestsChanged(
+            pendingJoins.values.map { (socket, peer) ->
+                ConnectionRequest(
+                    deviceId = peer.deviceId,
+                    deviceName = peer.deviceName,
+                    hostIp = socket.remoteSocketAddress?.address?.hostAddress.orEmpty(),
+                    port = address.port,
+                    roomCode = getRoomCode(),
+                    isInvitation = false,
+                )
+            },
+        )
     }
 
     private fun participantWires(): List<PeerWire> {

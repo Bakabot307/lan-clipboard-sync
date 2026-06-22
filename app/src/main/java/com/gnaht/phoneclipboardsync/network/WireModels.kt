@@ -68,3 +68,14 @@ data class RoomDiscoveryMessage(
         const val APP_ID = "com.gnaht.phoneclipboardsync.room"
     }
 }
+
+@Serializable
+data class BinaryClipMetadata(
+    val clipId: String,
+    val sourceDeviceId: String,
+    val sourceDeviceName: String,
+    val fileName: String,
+    val mimeType: String,
+    val timestamp: Long,
+)
+
