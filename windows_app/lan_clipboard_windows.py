@@ -19,7 +19,7 @@ import tempfile
 import winsound
 from dataclasses import dataclass, field
 from pathlib import Path
-from tkinter import BooleanVar, END, IntVar, Listbox, StringVar, Tk, TclError, Toplevel, filedialog, ttk
+from tkinter import BooleanVar, END, IntVar, Listbox, StringVar, Tk, TclError, filedialog, ttk
 
 CF_HDROP = 15
 CF_BITMAP = 2
@@ -860,7 +860,6 @@ class AppState:
     monitor: bool = True
     notify_sound: bool = True
     notify_popup: bool = False
-    notify_popup_seconds: int = 4
     image_save_permanent: bool = True
     image_save_dir: str = ""
     host_ip: str = ""
@@ -899,7 +898,6 @@ class LanClipboardWindowsApp(Tk):
         self.last_clipboard_text = ""
         self.last_sent_text = ""
         self.last_sent_at = 0.0
-        self.popup_windows: list[Toplevel] = []
         self.temp_image_dir = Path(tempfile.gettempdir()) / f"lan_clipboard_sync_{uuid.uuid4().hex}"
         self.tray_icon = WindowsTrayIcon(
             on_open=lambda: self.post("tray_open"),
@@ -917,7 +915,6 @@ class LanClipboardWindowsApp(Tk):
         self.monitor = BooleanVar(value=self.state.monitor)
         self.notify_sound = BooleanVar(value=self.state.notify_sound)
         self.notify_popup = BooleanVar(value=self.state.notify_popup)
-        self.notify_popup_seconds = IntVar(value=self.state.notify_popup_seconds)
         self.image_save_permanent = BooleanVar(value=self.state.image_save_permanent)
         self.image_save_dir = StringVar(value=self.state.image_save_dir)
         self.status = StringVar(value="Starting...")
@@ -940,10 +937,6 @@ class LanClipboardWindowsApp(Tk):
                 data = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError):
                 data = {}
-        try:
-            popup_seconds = int(data.get("notify_popup_seconds") or 4)
-        except (TypeError, ValueError):
-            popup_seconds = 4
         return AppState(
             device_id=data.get("device_id") or str(uuid.uuid4()),
             device_name=data.get("device_name") or socket.gethostname() or "Windows PC",
@@ -955,7 +948,6 @@ class LanClipboardWindowsApp(Tk):
             monitor=bool(data.get("monitor", True)),
             notify_sound=bool(data.get("notify_sound", True)),
             notify_popup=bool(data.get("notify_popup", False)),
-            notify_popup_seconds=max(1, min(60, popup_seconds)),
             image_save_permanent=bool(data.get("image_save_permanent", True)),
             image_save_dir=str(data.get("image_save_dir") or DEFAULT_IMAGE_DIR),
         )
@@ -973,7 +965,6 @@ class LanClipboardWindowsApp(Tk):
             "monitor": self.state.monitor,
             "notify_sound": self.state.notify_sound,
             "notify_popup": self.state.notify_popup,
-            "notify_popup_seconds": self.state.notify_popup_seconds,
             "image_save_permanent": self.state.image_save_permanent,
             "image_save_dir": self.state.image_save_dir,
         }
@@ -998,9 +989,6 @@ class LanClipboardWindowsApp(Tk):
         style.configure("Header.TLabel", background="#f5f7fb", foreground="#111827", font=("Segoe UI", 16, "bold"))
         style.configure("Section.TLabel", background="#ffffff", foreground="#111827", font=("Segoe UI", 10, "bold"))
         style.configure("Status.TLabel", background="#f5f7fb", foreground="#2563eb", font=("Segoe UI", 9, "bold"))
-        style.configure("Popup.TFrame", background="#ffffff", relief="flat")
-        style.configure("PopupTitle.TLabel", background="#ffffff", foreground="#111827", font=("Segoe UI", 10, "bold"))
-        style.configure("PopupBody.TLabel", background="#ffffff", foreground="#374151", font=("Segoe UI", 9))
         style.configure("TButton", font=("Segoe UI", 9), padding=(10, 5))
         style.configure("Accent.TButton", font=("Segoe UI", 9, "bold"), padding=(12, 6))
         style.configure("TCheckbutton", background="#f5f7fb", foreground="#374151", font=("Segoe UI", 9))
@@ -1061,15 +1049,6 @@ class LanClipboardWindowsApp(Tk):
         notification_options.pack(anchor="w", fill="x")
         ttk.Checkbutton(notification_options, text="Ting on receive", variable=self.notify_sound, command=self.save_config, style="Card.TCheckbutton").pack(side="left")
         ttk.Checkbutton(notification_options, text="Windows popup", variable=self.notify_popup, command=self.save_config, style="Card.TCheckbutton").pack(side="left", padx=14)
-        ttk.Spinbox(
-            notification_options,
-            from_=1,
-            to=60,
-            textvariable=self.notify_popup_seconds,
-            width=4,
-            command=self.save_config,
-        ).pack(side="left")
-        ttk.Label(notification_options, text="sec", style="Card.TLabel").pack(side="left", padx=(4, 0))
         ttk.Label(settings, text="Images", style="Section.TLabel").pack(anchor="w", pady=(12, 8))
         ttk.Checkbutton(
             settings,
@@ -1192,13 +1171,6 @@ class LanClipboardWindowsApp(Tk):
         self.state.monitor = self.monitor.get()
         self.state.notify_sound = self.notify_sound.get()
         self.state.notify_popup = self.notify_popup.get()
-        try:
-            popup_seconds = int(self.notify_popup_seconds.get())
-        except TclError:
-            popup_seconds = 4
-        popup_seconds = max(1, min(60, popup_seconds))
-        self.state.notify_popup_seconds = popup_seconds
-        self.notify_popup_seconds.set(popup_seconds)
         self.state.image_save_permanent = self.image_save_permanent.get()
         image_dir = self.image_save_dir.get().strip() or str(DEFAULT_IMAGE_DIR)
         self.state.image_save_dir = str(self.resolve_image_save_dir(image_dir))
@@ -2521,55 +2493,7 @@ class LanClipboardWindowsApp(Tk):
             self.show_popup_notification(title, message)
 
     def show_popup_notification(self, title: str, message: str) -> None:
-        popup = Toplevel(self)
-        popup.title(APP_NAME)
-        popup.transient(self)
-        popup.withdraw()
-        popup.overrideredirect(True)
-        popup.attributes("-topmost", True)
-        if ICON_PATH.exists():
-            try:
-                popup.iconbitmap(default=str(ICON_PATH))
-            except TclError:
-                pass
-
-        frame = ttk.Frame(popup, padding=(14, 12), style="Popup.TFrame")
-        frame.pack(fill="both", expand=True)
-        ttk.Label(frame, text=title, style="PopupTitle.TLabel").pack(anchor="w")
-        ttk.Label(
-            frame,
-            text=message,
-            style="PopupBody.TLabel",
-            wraplength=300,
-            justify="left",
-        ).pack(anchor="w", pady=(4, 0))
-
-        popup.update_idletasks()
-        width = max(320, popup.winfo_reqwidth())
-        height = popup.winfo_reqheight()
-        self.popup_windows = [item for item in self.popup_windows if item.winfo_exists()]
-        offset = len(self.popup_windows) * (height + 10)
-        x = popup.winfo_screenwidth() - width - 18
-        y = popup.winfo_screenheight() - height - 54 - offset
-        popup.geometry(f"{width}x{height}+{max(0, x)}+{max(0, y)}")
-        popup.deiconify()
-        popup.bind("<Button-1>", lambda _event: self.close_popup_notification(popup))
-        self.popup_windows.append(popup)
-
-        duration_ms = self.current_popup_seconds() * 1000
-        popup.after(duration_ms, lambda: self.close_popup_notification(popup))
-
-    def current_popup_seconds(self) -> int:
-        try:
-            return max(1, min(60, int(self.notify_popup_seconds.get())))
-        except TclError:
-            return 4
-
-    def close_popup_notification(self, popup: Toplevel) -> None:
-        if popup in self.popup_windows:
-            self.popup_windows.remove(popup)
-        if popup.winfo_exists():
-            popup.destroy()
+        self.tray_icon.show_balloon(title, message)
 
     def close_app(self) -> None:
         self.stop_event.set()
